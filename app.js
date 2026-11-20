@@ -3,7 +3,7 @@
 'use strict';
 
 const APP_NAME = 'Vet Health Log';
-const APP_VERSION = '1.3.2';
+const APP_VERSION = '1.3.3';
 /* Where feedback goes. Leave both blank to hide the feedback card.
    FEEDBACK_FORM: link to a Google Form (anonymous — set the form to NOT collect email addresses). Preferred.
    FEEDBACK_EMAIL: used only if there is no form. Email is NOT anonymous: the sender's address is visible. */
@@ -143,6 +143,7 @@ const TEMPLATE_RULES = [
 function guessTemplate(name) { for (const [re, t] of TEMPLATE_RULES) if (re.test(name || '')) return t; return ''; }
 function tplOf(cOrId) { const c = typeof cOrId === 'string' ? cond(cOrId) : cOrId; if (!c) return ''; return c.tpl != null ? c.tpl : (FIELDS[c.id] ? c.id : ''); }
 function fieldsFor(cid) { return FIELDS[tplOf(cid)] || []; }
+const VISIT = 'Doctor / ER / VA visit';
 const IMPACTS = ['Missed work', 'Left work early', 'Could not do chores', 'Could not drive', 'Cancelled plans', 'Needed help from someone', 'Doctor / ER / VA visit'];
 const MED_HELP = ['Yes', 'A little', 'No'];
 const CRISIS_TEL = 'tel:988';
@@ -178,7 +179,7 @@ function freshState() {
     medDoses: {},                // usual amounts per medication name
     medRx: {},                   // name -> true when prescribed
     medInfo: {},                 // name -> {daily:{from}, past:[{from,to}], skip:[dates], for:[cid], since, se:[side effects]}
-    custom: { sx: {}, imp: [], se: [] }, // saved write-ins: symptoms per condition, daily-life effects, side effects
+    custom: { sx: {}, imp: [], se: [], docs: [] }, // saved write-ins: symptoms per condition, daily-life effects, side effects, doctors
     settings: { onboarded: false, bigText: false, pinHash: null, pinSalt: null, lastBackup: null, backupSnooze: null, installDismissed: false, compact: true, reminderTime: '20:00' },
   };
 }
@@ -198,7 +199,7 @@ function load() {
     for (const c of s.conditions) if (c.custom && (!c.icon || c.icon === '📝')) c.icon = guessIcon(c.name);
     for (const c of s.conditions) if (c.custom && c.tpl == null) c.tpl = guessTemplate(c.name);
     s.meds = Array.isArray(s.meds) ? s.meds : [];
-    s.custom = Object.assign({ sx: {}, imp: [], se: [] }, s.custom || {});
+    s.custom = Object.assign({ sx: {}, imp: [], se: [], docs: [] }, s.custom || {});
     s.medRx = s.medRx || {};
     s.medInfo = s.medInfo || {};
     // v1.0 stored one medication as text; convert to the list format
@@ -636,6 +637,7 @@ function renderDetails(c, e) {
       ${IMPACTS.concat(S.custom.imp).map(i => `<button class="chip check" data-f="imp" data-multi="${esc(i)}" aria-pressed="${(e.imp || []).includes(i)}">${esc(i)}</button>`).join('')}
       ${otherAdder('imp')}
     </div></div>
+    ${(e.imp || []).includes(VISIT) ? visitFields(c, e) : ''}
     <div class="subhead">Medication</div>
     <div class="field">${meds.length ? '<div class="lbl">What did you take? Tap the name. Change the amount if it was different.</div>' : ''}
       ${meds.map(m => { const tk = medsOn(c.id, curDate, e).find(t => t.n === m); return medRow(m, tk, tk ? taken.indexOf(tk) : -1); }).join('')}
@@ -646,6 +648,32 @@ function renderDetails(c, e) {
       <textarea id="notes-${c.id}" data-f="notes">${esc(e.notes || '')}</textarea></div>
     ${e.c ? `<p class="small muted">Recorded ${fmtShort(e.c)}.</p>` : ''}
     <button class="btn ghost small" data-act="clearentry" style="margin-top:6px">Clear this day's entry</button>`;
+}
+/* Shown when "Doctor / ER / VA visit" is ticked. Everything here is optional. */
+function visitFields(c, e) {
+  const v = e.visit || {}, docs = S.custom.docs || [];
+  return `<div class="visit">
+    <div class="lbl">🩺 About the visit <span class="muted small" style="font-weight:400">— all optional</span></div>
+    <div class="field"><label for="vwho-${c.id}">Doctor or clinic</label>
+      ${docs.length ? `<div class="chips" style="margin-bottom:8px">${docs.slice(0, 6).map(d => `<button class="chip mini" data-act="docpick" data-v="${esc(d)}" aria-pressed="${v.who === d}">${esc(d)}</button>`).join('')}</div>` : ''}
+      <input type="text" id="vwho-${c.id}" data-f="visit.who" value="${esc(v.who || '')}" placeholder="e.g. Dr. Smith, VA clinic, ER"></div>
+    <div class="field"><div class="lbl">Follow-up needed?</div><div class="chips">
+      <button class="chip" data-act="visitfu" data-v="yes" aria-pressed="${v.fu === true}">Yes</button>
+      <button class="chip" data-act="visitfu" data-v="no" aria-pressed="${v.fu === false}">No</button></div>
+      ${v.fu === true ? `<label class="small" for="vfu-${c.id}" style="display:block;font-weight:600;margin-top:8px">When? (optional)</label><input type="date" id="vfu-${c.id}" data-f="visit.fuDate" value="${esc(v.fuDate || '')}">` : ''}</div>
+    <div class="field"><label for="vnotes-${c.id}">What did the doctor say? Diagnosis, tests, changes to treatment</label>
+      <textarea id="vnotes-${c.id}" data-f="visit.notes">${esc(v.notes || '')}</textarea></div>
+  </div>`;
+}
+function visitText(e, withNotes = true) {
+  if (!(e.imp || []).includes(VISIT) || !e.visit) return '';
+  const v = e.visit, p = [];
+  if (v.who) p.push(v.who);
+  if (v.fu === true) p.push('follow-up needed' + (v.fuDate ? ` (${fmtShort(v.fuDate)})` : ''));
+  if (v.fu === false) p.push('no follow-up');
+  let out = p.length ? `Visit: ${p.join(', ')}` : '';
+  if (withNotes && v.notes) out += (out ? '. ' : '') + `Doctor's notes: ${v.notes}`;
+  return out;
 }
 function yesNo(k, label, val) {
   return `<div class="field"><div class="lbl">${esc(label)}</div><div class="chips">
@@ -685,6 +713,7 @@ function pruneEntry(date, cid) {
   const e = getEntry(date, cid);
   if (!e) return;
   if (e.x && !Object.keys(e.x).length) delete e.x;
+  if (e.visit && !Object.keys(e.visit).length) delete e.visit;
   if (!Object.keys(e).some(k => k !== 'c')) { delete S.entries[date][cid]; if (!Object.keys(S.entries[date]).length) delete S.entries[date]; }
 }
 
@@ -795,10 +824,11 @@ function summaryLine(cid, e, maxLen, date) {
   if (e.flare) parts.push('Flare-up');
   if (e.lay) parts.push(`Had to lie down${e.layHrs ? ` ${e.layHrs} hrs` : ''}`);
   if (e.imp && e.imp.length) parts.push(e.imp.join(', '));
+  const vt = visitText(e); if (vt) parts.push(vt);
   const ml = date ? medsOn(cid, date, e) : (e.meds || []);
   if (ml.length) parts.push(`Meds: ${ml.map(m => medLabel(m, true) + (m.daily ? ' (every day)' : '') + (m.h ? ` (helped: ${m.h})` : '')).join(', ')}`);
   if (e.notes) parts.push(`Notes: ${e.notes}`);
-  let s = parts.join('. ');
+  let s = parts.map(p => p.replace(/[.\s]+$/, '')).filter(Boolean).join('. '); // no ".." when a note ends with a period
   if (maxLen && s.length > maxLen) s = s.slice(0, maxLen - 1) + '…';
   return s;
 }
@@ -869,12 +899,12 @@ function makeCSV() {
   const conds = selectedReportConds();
   if (!conds.length) return toast('Pick at least one condition first');
   const [from, to] = reportRange();
-  const head = ['Date', 'Condition', 'Severity (0-10, worst of day)', 'Severity word', 'Changes during day', 'Flare-up', 'Had to lie down', 'Lie-down hours', 'Effect on work/life', 'Medications (helped?)', 'Condition details', 'Notes', 'Date recorded'];
+  const head = ['Date', 'Condition', 'Severity (0-10, worst of day)', 'Severity word', 'Changes during day', 'Flare-up', 'Had to lie down', 'Lie-down hours', 'Effect on work/life', 'Visit details', 'Medications (helped?)', 'Condition details', 'Notes', 'Date recorded'];
   const rows = [head];
   for (const c of conds) {
     for (const [d, e] of entriesFor(c.id, from, to)) {
       const detail = summaryLine(c.id, { x: e.x }, 0);
-      rows.push([d, c.name, e.sev ?? '', sevWord(e.sev ?? null), e.log && e.log.length > 1 ? timelineText(e, ' -> ') : '', e.flare === true ? 'Yes' : e.flare === false ? 'No' : '', e.lay === true ? 'Yes' : e.lay === false ? 'No' : '', e.layHrs ?? '', (e.imp || []).join('; '), medsOn(c.id, d, e).map(m => medLabel(m, true) + (m.daily ? ' (every day)' : '') + (m.h ? ` (${m.h})` : '')).join('; '), detail, rep.notes ? (e.notes || '') : '', e.c || '']);
+      rows.push([d, c.name, e.sev ?? '', sevWord(e.sev ?? null), e.log && e.log.length > 1 ? timelineText(e, ' -> ') : '', e.flare === true ? 'Yes' : e.flare === false ? 'No' : '', e.lay === true ? 'Yes' : e.lay === false ? 'No' : '', e.layHrs ?? '', (e.imp || []).join('; '), visitText(e), medsOn(c.id, d, e).map(m => medLabel(m, true) + (m.daily ? ' (every day)' : '') + (m.h ? ` (${m.h})` : '')).join('; '), detail, rep.notes ? (e.notes || '') : '', e.c || '']);
     }
   }
   if (rows.length === 1) return toast('No entries for those conditions in that time period');
@@ -1020,6 +1050,25 @@ function makePDF() {
       y += 8;
     }
 
+    // Doctor / ER / VA visits
+    const visits = list.filter(([, e]) => (e.imp || []).includes(VISIT));
+    if (visits.length) {
+      need(40);
+      text(`Doctor / ER / VA visits (${visits.length})`, M, 13, 'bold', navy); y += 16;
+      for (const [d, e] of visits) {
+        const v = e.visit || {};
+        const line = [v.who || 'Visit', v.fu === true ? 'follow-up needed' + (v.fuDate ? ` ${fmtShort(v.fuDate)}` : '') : v.fu === false ? 'no follow-up' : ''].filter(Boolean).join(' - ');
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5);
+        const notes = v.notes ? doc.splitTextToSize(pdfText(`Doctor's notes: ${v.notes}`), CW - 74) : [];
+        need(14 + notes.length * 12);
+        doc.setTextColor(20, 20, 20); doc.text(fmtShort(d), M, y);
+        doc.setFont('helvetica', 'bold'); doc.text(pdfText(line), M + 74, y); y += 13;
+        if (notes.length) { doc.setFont('helvetica', 'normal'); doc.setTextColor(60, 60, 70); doc.text(notes, M + 74, y); y += notes.length * 12; }
+        y += 4;
+      }
+      y += 8;
+    }
+
     // Daily entries
     need(50);
     text('Daily entries', M, 13, 'bold', navy); y += 13;
@@ -1137,8 +1186,8 @@ function renderSettings() {
     </div>
     <div class="card" id="updates-card">
       <h2 style="font-size:1.05em">⬆️ App updates</h2>
-      <p class="small muted">You're using version <b>${APP_VERSION}</b>. The app never changes until you say so — your entries are never affected by an update.</p>
-      ${updateInfo ? `<div class="banner info" style="margin:8px 0 0"><b>Version ${esc(updateInfo.version)} is ready</b>${notesList()}<div class="row"><button class="btn" data-act="applyupdate">Update now</button></div></div>`
+      <p class="small muted">You're using version <b>${APP_VERSION}</b>. The app only changes when you tap Update now — except a rare <b>required</b> update that fixes a problem. Your entries are never affected by an update.</p>
+      ${updateInfo ? `<div class="banner ${updateInfo.required ? 'warn' : 'info'}" style="margin:8px 0 0"><b>${updateInfo.required ? '⚠️ Important update: version' : 'Version'} ${esc(updateInfo.version)} is ready</b>${notesList()}<div class="row"><button class="btn" data-act="applyupdate">Update now</button></div></div>`
         : `<button class="btn secondary block" data-act="checkupdate">Check for updates</button>`}
     </div>
     ${FEEDBACK_FORM ? `<div class="card">
@@ -1202,48 +1251,62 @@ function addReminderGoogle() {
 let swReg = null, updateInfo = null, updateHidden = false, applyingUpdate = false, lastUpdateCheck = 0, fbKind = 'Suggestion';
 function notesList() { return updateInfo && updateInfo.notes && updateInfo.notes.length ? `<ul class="small" style="margin:6px 0 0;padding-left:20px">${updateInfo.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>` : ''; }
 function updateBanner() {
-  if (!updateInfo || updateHidden) return '';
+  if (!updateInfo) return '';
+  if (updateInfo.required) return `<div class="banner warn"><b>⚠️ Important update — version ${esc(updateInfo.version)}</b>${notesList()}
+    <p class="small" style="margin:6px 0 0">This update fixes a problem, so it's required. It installs the next time you open the app, or tap Update now. Your entries stay exactly as they are.</p>
+    <div class="row"><button class="btn" data-act="applyupdate">Update now</button></div></div>`;
+  if (updateHidden) return '';
   return `<div class="banner info"><b>⬆️ Update available — version ${esc(updateInfo.version)}</b>${notesList()}
     <p class="small muted" style="margin:6px 0 0">Your entries stay exactly as they are.</p>
     <div class="row"><button class="btn" data-act="applyupdate">Update now</button><button class="btn ghost" data-act="laterupdate">Later</button></div></div>`;
 }
-function askWorker(w) {
+function askWorker(w, msg) {
   return new Promise(res => {
-    const ch = new MessageChannel(); const t = setTimeout(() => res(null), 3000);
+    const ch = new MessageChannel(); const t = setTimeout(() => res(null), 5000);
     ch.port1.onmessage = e => { clearTimeout(t); res(e.data); };
-    w.postMessage({ type: 'info' }, [ch.port2]);
+    w.postMessage(msg || { type: 'info' }, [ch.port2]);
   });
 }
-async function onWaiting(w) {
+/* The service worker keeps showing the version you're on; it reports the newest one it has downloaded. */
+async function checkInfo() {
+  const w = swReg && swReg.active; if (!w) return;
   const info = await askWorker(w);
-  // Already running this version's code (e.g. moving from an older auto-updating version): switch quietly.
-  if (info && info.version === APP_VERSION) { w.postMessage({ type: 'skipWaiting' }); return; }
-  updateInfo = info || { version: 'new', notes: [] };
-  if (unlocked && S.settings.onboarded && (tab === 'today' || tab === 'settings')) render();
+  if (!info || !info.latest) return;
+  const was = updateInfo && updateInfo.version;
+  updateInfo = info.latest !== APP_VERSION ? { version: info.latest, notes: info.notes || [], required: !!info.required } : null;
+  if ((updateInfo && updateInfo.version) !== was && unlocked && S.settings.onboarded && (tab === 'today' || tab === 'settings')) render();
+}
+function whenActive(w) { // wait for a newly downloaded worker to finish setting up
+  return new Promise(res => {
+    if (!w) return res();
+    const t = setTimeout(res, 20000);
+    const f = () => { if (w.state === 'activated' || w.state === 'redundant') { clearTimeout(t); res(); } };
+    w.addEventListener('statechange', f); f();
+  });
 }
 async function initUpdates() {
   if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
   try { swReg = await navigator.serviceWorker.register('sw.js'); } catch (e) { console.warn('SW', e); return; }
-  if (swReg.waiting && navigator.serviceWorker.controller) onWaiting(swReg.waiting);
-  swReg.addEventListener('updatefound', () => {
-    const w = swReg.installing;
-    if (w) w.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) onWaiting(w); });
-  });
-  navigator.serviceWorker.addEventListener('controllerchange', () => { if (applyingUpdate) { applyingUpdate = false; location.reload(); } });
+  swReg.addEventListener('updatefound', () => whenActive(swReg.installing).then(checkInfo));
   lastUpdateCheck = Date.now();
+  await whenActive(swReg.installing || swReg.waiting);
+  checkInfo();
 }
 async function checkForUpdates(manual) {
   if (!swReg) { if (manual) toast('Updates work once the app is installed from its web address'); return; }
   lastUpdateCheck = Date.now();
   if (manual) toast('Checking…');
   try { await swReg.update(); } catch (e) { if (manual) toast("Couldn't check — are you online?"); return; }
-  if (swReg.waiting) { await onWaiting(swReg.waiting); if (manual && !updateInfo) toast('You have the latest version'); }
-  else if (swReg.installing) { if (manual) toast('Downloading the update…'); }
-  else if (manual) toast('You have the latest version ✓');
+  await whenActive(swReg.installing || swReg.waiting);
+  await checkInfo();
+  if (manual) toast(updateInfo ? `Version ${updateInfo.version} is ready — tap Update now` : 'You have the latest version ✓');
 }
-function applyUpdate() {
-  if (swReg && swReg.waiting) { applyingUpdate = true; swReg.waiting.postMessage({ type: 'skipWaiting' }); toast('Updating…'); }
-  else location.reload();
+async function applyUpdate() {
+  const w = swReg && swReg.active;
+  if (!w) { location.reload(); return; }
+  applyingUpdate = true; toast('Updating…');
+  await askWorker(w, { type: 'apply' });
+  location.reload();
 }
 function sendFeedback() {
   const msg = ($('#fb-text')?.value || '').trim();
@@ -1400,6 +1463,10 @@ function renderMeds() {
       <button class="btn block" data-act="medpdf">Make medication report (PDF)</button>
     </div>` : ''}`;
 }
+function rememberDoc(name) {
+  const l = (S.custom.docs || []).filter(x => x.toLowerCase() !== name.toLowerCase());
+  l.unshift(name); S.custom.docs = l.slice(0, 12);
+}
 function saveDoseEdit(inp) {
   if (!inp) return;
   const v = (inp.value || '').trim();
@@ -1477,6 +1544,7 @@ function makeMedPDF() {
 function savedChoicesCard() {
   const groups = [];
   if (S.custom.imp.length) groups.push(['Effect on work & daily life', 'imp', '', S.custom.imp]);
+  if ((S.custom.docs || []).length) groups.push(['Doctors and clinics', 'doc', '', S.custom.docs]);
   for (const cid in S.custom.sx) { const c = cond(cid); if (c && S.custom.sx[cid].length) groups.push([c.name, 'sx', cid, S.custom.sx[cid]]); }
   if (!groups.length) return '';
   return `<div class="card"><h2 style="font-size:1.05em">✏️ My saved write-ins</h2>
@@ -1611,7 +1679,7 @@ function onClick(ev) {
       if (f === 'lay') { if (e.lay !== true) delete e.layHrs; rerender = true; }
     }
     else if (t.dataset.choice) { const v = t.dataset.choice; setPath(e, f, getPath(e, f) === v ? undefined : v); }
-    else if (t.dataset.multi) { const v = t.dataset.multi; const arr = (getPath(e, f) || []).slice(); const i = arr.indexOf(v); i >= 0 ? arr.splice(i, 1) : arr.push(v); setPath(e, f, arr); }
+    else if (t.dataset.multi) { const v = t.dataset.multi; const arr = (getPath(e, f) || []).slice(); const i = arr.indexOf(v); i >= 0 ? arr.splice(i, 1) : arr.push(v); setPath(e, f, arr); if (f === 'imp' && v === VISIT) rerender = true; }
     pruneEntry(curDate, cid); save();
     if (rerender) { rerenderCard(cid); return; }
     // fast local update of pressed states
@@ -1775,6 +1843,18 @@ function onClick(ev) {
     }
     case 'medotheradd': addMedOther($('input', t.closest('.adder'))); break;
     case 'medpdf': makeMedPDF(); break;
+    case 'docpick': {
+      const e = ensureEntry(curDate, cid); e.visit = e.visit || {};
+      if (e.visit.who === t.dataset.v) delete e.visit.who; else { e.visit.who = t.dataset.v; rememberDoc(t.dataset.v); }
+      pruneEntry(curDate, cid); save(); rerenderCard(cid); break;
+    }
+    case 'visitfu': {
+      const e = ensureEntry(curDate, cid); e.visit = e.visit || {};
+      const b = t.dataset.v === 'yes';
+      if (e.visit.fu === b) delete e.visit.fu; else e.visit.fu = b;
+      if (e.visit.fu !== true) delete e.visit.fuDate;
+      pruneEntry(curDate, cid); save(); rerenderCard(cid); break;
+    }
     case 'medopen': {
       const n = t.dataset.v;
       if (medOpen.has(n) || medEdit === n) { medOpen.delete(n); if (medEdit === n) medEdit = null; } else medOpen.add(n);
@@ -1798,6 +1878,7 @@ function onClick(ev) {
     case 'delcustom': {
       const v = t.dataset.v;
       if (t.dataset.kind === 'imp') S.custom.imp = S.custom.imp.filter(x => x !== v);
+      else if (t.dataset.kind === 'doc') S.custom.docs = (S.custom.docs || []).filter(x => x !== v);
       else { const c = t.dataset.cid; S.custom.sx[c] = (S.custom.sx[c] || []).filter(x => x !== v); if (!S.custom.sx[c].length) delete S.custom.sx[c]; }
       save(); render(); break;
     }
@@ -1898,7 +1979,9 @@ function onChange(ev) {
     let v = t.value;
     if (t.dataset.num) { v = v === '' ? undefined : Math.min(Number(t.max) || 9999, Math.max(0, Number(v))); if (Number.isNaN(v)) v = undefined; }
     else v = v.trim() || undefined;
-    setPath(e, t.dataset.f, v); pruneEntry(curDate, cid); save(); updateCardStatus(cid); return;
+    setPath(e, t.dataset.f, v); pruneEntry(curDate, cid);
+    if (t.dataset.f === 'visit.who' && v) rememberDoc(v);
+    save(); updateCardStatus(cid); return;
   }
   if (t.id === 's-name') { S.profile.name = t.value.trim(); save(); toast('Saved'); return; }
   if (t.dataset.act === 'medrx') { if (t.checked) S.medRx[t.dataset.v] = true; else delete S.medRx[t.dataset.v]; save(); if (tab === 'meds') render(); return; }
@@ -1934,6 +2017,10 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 let lastSeenToday = todayStr();
+if (S.settings.lastVersion !== APP_VERSION) {
+  if (S.settings.lastVersion && S.settings.onboarded) setTimeout(() => toast(`Updated to version ${APP_VERSION}`), 800);
+  S.settings.lastVersion = APP_VERSION; save();
+}
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 fixMedNames();
 fixMultiMeds();
