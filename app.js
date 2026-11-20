@@ -3,7 +3,7 @@
 'use strict';
 
 const APP_NAME = 'Vet Health Log';
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 /* Where feedback goes. Leave both blank to hide the feedback card.
    FEEDBACK_FORM: link to a Google Form (anonymous — set the form to NOT collect email addresses). Preferred.
    FEEDBACK_EMAIL: used only if there is no form. Email is NOT anonymous: the sender's address is visible. */
@@ -413,11 +413,68 @@ function fixMistake(cid) {                 // the change was a correction, not a
   e.log.pop(); e.log[e.log.length - 1].v = p.to; recalcSev(e); delete pendingChange[cid];
 }
 
-/* "Ibuprofen 800mg" -> ['Ibuprofen', '800mg']: the amount starts at the first later word that begins with a number */
+/* Split a medication into name and amount:
+   "Ibuprofen 800mg", "Ibuprofen - 800 mg", "Ibuprofen (800mg)", "Ibuprofen800mg", "800mg Ibuprofen" -> ['Ibuprofen', '800mg' / '800 mg'].
+   Names with numbers but no amount unit stay whole: "Vitamin D3", "CoQ10", "5-HTP". */
+const MED_UNIT = '(?:mg|mcg|µg|ug|g|ml|iu|units?|%|tabs?|tablets?|caps?|capsules?|pills?|puffs?|drops?|sprays?|patch(?:es)?)(?![a-z])';
 function splitMed(str) {
-  const w = String(str || '').trim().replace(/\s+/g, ' ').split(' ');
-  const i = w.findIndex((x, k) => k > 0 && /^[\d.½¼¾]/.test(x));
-  return i > 0 ? [w.slice(0, i).join(' '), w.slice(i).join(' ')] : [w.join(' '), ''];
+  const s = String(str || '').trim().replace(/\s+/g, ' ');
+  const cleanN = x => x.replace(/^[\s,\-–:;(]+|[\s,\-–:;(]+$/g, '').trim();
+  const cleanD = x => x.replace(/^[\s,\-–:;(]+|[\s,\-–:;)]+$/g, '').trim();
+  let m = s.match(new RegExp('^(\\d[\\d.,/]*\\s*' + MED_UNIT + ')\\s+(.+)$', 'i')); // amount first
+  if (m && cleanN(m[2])) return [cleanN(m[2]), m[1]];
+  const w = s.split(' ');
+  const i = w.findIndex((x, k) => k > 0 && /^\(?[\d.½¼¾]/.test(x)); // amount as its own word
+  if (i > 0) { const n = cleanN(w.slice(0, i).join(' ')); if (n) return [n, cleanD(w.slice(i).join(' '))]; }
+  m = s.match(new RegExp('^(.*?[a-z)])\\s*-?\\s*(\\d[\\d.,/]*\\s*' + MED_UNIT + '.*)$', 'i')); // glued: Ibuprofen800mg
+  if (m && cleanN(m[1])) return [cleanN(m[1]), cleanD(m[2])];
+  return [s, ''];
+}
+/* Rename a medication everywhere (list, amounts, prescribed, details, past entries). Merges into an existing one with the same name.
+   If the old name had an amount stuck on it ("Ibuprofen - 800mg" -> "Ibuprofen"), that amount moves to the amount field. */
+function renameMed(old, raw) {
+  let [nn, dd] = splitMed(raw);
+  if (!nn) return null;
+  if (!dd && old.toLowerCase().startsWith(nn.toLowerCase())) {
+    const rest = old.slice(nn.length).replace(/^[\s,\-–:;(]+|[\s,\-–:;)]+$/g, '').trim();
+    if (/\d/.test(rest)) dd = rest;
+  }
+  const target = S.meds.find(x => x !== old && x.toLowerCase() === nn.toLowerCase()) || (nn.charAt(0).toUpperCase() + nn.slice(1));
+  const idx = S.meds.indexOf(old);
+  S.meds = S.meds.filter(x => x !== old);
+  if (!S.meds.includes(target)) S.meds.splice(idx < 0 ? S.meds.length : idx, 0, target);
+  const doses = (S.medDoses[old] || []).slice(); delete S.medDoses[old];
+  if (dd) doses.unshift(dd);
+  for (const d of doses) addDose(target, d);
+  if (S.medRx[old]) { S.medRx[target] = true; delete S.medRx[old]; }
+  if (S.medInfo[old]) { if (!S.medInfo[target]) S.medInfo[target] = S.medInfo[old]; delete S.medInfo[old]; }
+  for (const day in S.entries) for (const cid in S.entries[day]) {
+    const e = S.entries[day][cid]; if (!e.meds) continue;
+    for (const m of e.meds) if (m.n === old) { m.n = target; if (!m.d && dd) m.d = dd; }
+    e.meds = e.meds.filter((m, k, a) => a.findIndex(x => x.n === m.n) === k);
+  }
+  if (medOpen.delete(old)) medOpen.add(target);
+  if (medEdit === old) medEdit = target;
+  return target;
+}
+/* Fix an amount everywhere it was used */
+function renameDose(n, old, v) {
+  v = (v || '').trim().replace(/\s+/g, ' ').slice(0, 30);
+  if (!v || v === old) return;
+  const l = S.medDoses[n] || [];
+  const target = l.find(x => x !== old && x.toLowerCase() === v.toLowerCase()) || v;
+  S.medDoses[n] = l.map(x => x === old ? target : x).filter((x, k, a) => a.indexOf(x) === k);
+  for (const day in S.entries) for (const cid in S.entries[day]) for (const m of S.entries[day][cid].meds || []) if (m.n === n && m.d === old) m.d = target;
+}
+/* One-time clean-up: medication names saved with the amount still in them */
+function fixMedNames() {
+  if (S.settings.medFix2) return;
+  for (const n of S.meds.slice()) { const [a, d] = splitMed(n); if (a && d) renameMed(n, n); }
+  for (const day in S.entries) for (const cid in S.entries[day]) for (const m of S.entries[day][cid].meds || []) {
+    if (m.d || S.meds.includes(m.n)) continue;
+    const [a, d] = splitMed(m.n); if (a && d) { m.n = S.meds.find(x => x.toLowerCase() === a.toLowerCase()) || a; m.d = d; }
+  }
+  S.settings.medFix2 = true; save();
 }
 function medName(n) { // the saved spelling, adding it to My medications if new
   const f = S.meds.find(x => x.toLowerCase() === n.toLowerCase()); if (f) return f;
@@ -1185,7 +1242,8 @@ function privacyCard(short) {
   return `<div class="card"><h2 style="font-size:1.05em">🔒 Your privacy</h2>
     <ul class="small privacy" style="padding-left:20px;margin:8px 0 0">${(short ? core : core.concat(more)).map(x => `<li>${x}</li>`).join('')}</ul></div>`;
 }
-let medRange = 30, medEdit = null;
+let medRange = 30, medEdit = null, doseEdit = null, medAddOpen = false;
+const medOpen = new Set();
 function firstActivity() {
   let f = firstEntryDate() || todayStr();
   for (const n in S.medInfo) { const i = S.medInfo[n]; if (i.daily && i.daily.from < f) f = i.daily.from; for (const p of i.past || []) if (p.from < f) f = p.from; }
@@ -1223,10 +1281,16 @@ function medCard(n, st, span) {
   const stripFrom = addDays(todayStr(), -29);
   const strip = Array.from({ length: 30 }, (_, k) => { const d = addDays(stripFrom, k); return `<i class="${takenOn(n, d) ? (daily ? 'on daily' : 'on') : ''}" title="${fmtShort(d)}"></i>`; }).join('');
   const ht = st.help.Yes + st.help['A little'] + st.help.No;
-  const head = `<div class="medhead"><span class="micon" aria-hidden="true">💊</span><h2>${esc(n)}${rx ? ' <span class="rx-tag" title="Prescribed">Rx</span>' : ''}</h2>
-      ${daily ? '<span class="daily">📅 Every day</span>' : '<span class="status">As needed</span>'}</div>`;
-  if (medEdit === n) return `<div class="card" id="med-${fileSafe(n)}">${head}${medEditPanel(n)}</div>`;
-  return `<div class="card" id="med-${fileSafe(n)}">${head}
+  const open = medOpen.has(n) || medEdit === n;
+  const sumAmt = daily ? (usual[0] || '') : (doses.length ? doses.map(([d]) => d) : usual).slice(0, 2).join(', ');
+  const sum = [sumAmt, `${st.days} of ${span} day${span === 1 ? '' : 's'}`].filter(Boolean).map(esc).join(' · ');
+  const head = `<button class="medsum" data-act="medopen" data-v="${esc(n)}" aria-expanded="${open}">
+      <span class="micon" aria-hidden="true">💊</span>
+      <span class="grow"><b>${esc(n)}</b>${rx ? ' <span class="rx-tag" title="Prescribed">Rx</span>' : ''}${daily ? ' <span class="daily">📅 Every day</span>' : ''}<br><span class="small muted">${sum}</span></span>
+      <span class="chev" aria-hidden="true">${open ? '▴' : '▾'}</span></button>`;
+  if (!open) return `<div class="card medcard" id="med-${fileSafe(n)}">${head}</div>`;
+  if (medEdit === n) return `<div class="card medcard" id="med-${fileSafe(n)}">${head}${medEditPanel(n)}</div>`;
+  return `<div class="card medcard" id="med-${fileSafe(n)}">${head}
     <div class="kv"><b>${daily || doses.length < 2 ? 'Amount' : 'Amounts'}</b><span>${amt}</span></div>
     <div class="kv"><b>Taken for</b><span>${forList.length ? forList.join(' · ') : '<span class="muted">Not recorded yet</span>'}</span></div>
     ${i.since ? `<div class="kv"><b>Since</b><span>${esc(i.since)}</span></div>` : ''}
@@ -1246,6 +1310,9 @@ function medEditPanel(n) {
   const i = mi(n), daily = !!i.daily, forL = i.for || [], se = i.se || [];
   const conds = activeConds();
   return `
+    <div class="field"><label for="medname-${fileSafe(n)}">Name</label>
+      <div style="display:flex;gap:8px"><input type="text" id="medname-${fileSafe(n)}" class="medname-in" data-med="${esc(n)}" value="${esc(n)}"><button class="btn small" data-act="medrename" data-v="${esc(n)}">Save</button></div>
+      <p class="small muted" style="margin:6px 0 0">Just the name. Amounts go under Usual amounts below.</p></div>
     <label class="rx" style="margin-top:8px"><input type="checkbox" data-act="medrx" data-v="${esc(n)}"${S.medRx[n] ? ' checked' : ''}> Prescribed</label>
     <div class="field"><div class="lbl">How do you take it?</div><div class="chips">
       <button class="chip" data-act="meddaily" data-v="${esc(n)}" data-on="0" aria-pressed="${!daily}">As needed</button>
@@ -1257,9 +1324,11 @@ function medEditPanel(n) {
       ${conds.map(c => `<button class="chip check" data-act="medfor" data-v="${esc(n)}" data-cid="${c.id}" aria-pressed="${forL.includes(c.id)}">${esc(c.name)}</button>`).join('')}</div>
       ${daily && !forL.length ? '<p class="small" style="margin:6px 0 0;color:var(--accent)">Pick what it\'s for, so it shows as taken on those conditions.</p>' : ''}</div>
     <div class="field"><div class="lbl">Usual amounts</div><div class="chips">
-      ${(S.medDoses[n] || []).map(d => `<button class="chip mini" data-act="deldose" data-med="${esc(n)}" data-v="${esc(d)}" aria-label="Stop suggesting ${esc(d)}">${esc(d)} ✕</button>`).join('')}
+      ${(S.medDoses[n] || []).map(d => doseEdit && doseEdit.n === n && doseEdit.d === d
+        ? `<span class="adder"><input type="text" data-kind="mdoseedit" data-med="${esc(n)}" data-old="${esc(d)}" value="${esc(d)}" enterkeyhint="done" aria-label="Fix amount ${esc(d)}"><button class="btn small" data-act="dosesave">Save</button><button class="btn ghost small" data-act="deldose" data-med="${esc(n)}" data-v="${esc(d)}" style="color:var(--danger)">Remove</button></span>`
+        : `<button class="chip mini" data-act="doseedit" data-med="${esc(n)}" data-v="${esc(d)}" aria-label="Fix or remove amount ${esc(d)}">${esc(d)} ✎</button>`).join('')}
       <button class="chip add" data-act="medother" data-kind="mdose" data-v="${esc(n)}">＋ Add amount</button></div>
-      ${daily ? '<p class="small muted" style="margin:6px 0 0">The first amount is the one counted every day.</p>' : ''}</div>
+      <p class="small muted" style="margin:6px 0 0">Tap an amount to fix or remove it. Fixing one also fixes it in past entries.${daily ? ' The first amount is the one counted every day.' : ''}</p></div>
     <div class="field"><label for="medsince-${fileSafe(n)}">Started taking it</label>
       <input type="text" class="medsince" id="medsince-${fileSafe(n)}" data-med="${esc(n)}" value="${esc(i.since || '')}" placeholder="e.g. March 2024"></div>
     <div class="field"><div class="lbl">Side effects</div><div class="chips">
@@ -1273,19 +1342,25 @@ function renderMeds() {
   const rows = S.meds.map(n => [n, medStats(n, from, to)]).sort((a, b) => b[1].days - a[1].days);
   return `
     <div class="seg" role="group" aria-label="Time range">${[[30, '30 days'], [90, '90 days'], [365, '1 year']].map(([v, l]) => `<button class="chip" data-act="mrange" data-v="${v}" aria-pressed="${medRange === v}">${l}</button>`).join('')}</div>
-    ${rows.length ? rows.map(([n, st]) => medCard(n, st, span)).join('') : '<div class="card"><div class="empty">No medications yet. Add the ones you take below.</div></div>'}
-    <div class="card">
+    ${rows.length ? `<p class="small muted" style="margin:0 2px 8px">Tap a medication to see how often you take it.</p>${rows.map(([n, st]) => medCard(n, st, span)).join('')}` : '<div class="card"><div class="empty">No medications yet. Add the ones you take below.</div></div>'}
+    ${!medAddOpen && S.meds.length ? '<button class="btn secondary block" data-act="medaddopen" style="margin-bottom:12px">＋ Add a medication</button>' : `<div class="card">
       <h2 style="font-size:1.05em">＋ Add a medication</h2>
       <div style="display:flex;gap:8px;margin-top:8px"><input type="text" id="s-newmed" placeholder="Name, e.g. Ibuprofen" aria-label="Medication name"><input type="text" id="s-newdose" placeholder="Amount" style="flex:0 0 34%;width:34%" aria-label="Usual amount (optional)"></div>
       <label class="rx" style="margin-top:8px"><input type="checkbox" id="s-newrx"> Prescribed</label>
       <button class="btn block" data-act="addmed" style="margin-top:8px">Add</button>
       <p class="small muted" style="margin:8px 0 0">Adding an amount to a medication you already have saves it as another usual amount.</p>
-    </div>
+    </div>`}
     ${S.meds.length ? `<div class="card">
       <h2 style="font-size:1.05em">📄 Medication report</h2>
       <p class="small muted">One PDF of all your medications for the time range above: amounts, prescribed or not, what each is for, how often you took it, whether it helped, and side effects. Good to bring to your VSO or doctor.</p>
       <button class="btn block" data-act="medpdf">Make medication report (PDF)</button>
     </div>` : ''}`;
+}
+function saveDoseEdit(inp) {
+  if (!inp) return;
+  const v = (inp.value || '').trim();
+  if (!v) { toast('Type the amount, or tap Remove'); inp.focus(); return; }
+  renameDose(inp.dataset.med, inp.dataset.old, v); doseEdit = null; save(); render(); toast('Amount fixed');
 }
 function addMedOther(inp) {
   if (!inp) return;
@@ -1626,7 +1701,7 @@ function onClick(ev) {
       save(); render(); toast(`Added ${medLabel({ n: name, d })}`); break;
     }
     case 'mrange': medRange = Number(t.dataset.v); render(); break;
-    case 'mededit': medEdit = t.dataset.v || null; render(); { const el = medEdit && document.getElementById('med-' + fileSafe(medEdit)); if (el) el.scrollIntoView({ block: 'start' }); } break;
+    case 'mededit': medEdit = t.dataset.v || null; doseEdit = null; render(); { const el = medEdit && document.getElementById('med-' + fileSafe(medEdit)); if (el) el.scrollIntoView({ block: 'start' }); } break;
     case 'meddaily': {
       const n = t.dataset.v, i = medInfo(n), on = t.dataset.on === '1';
       if (on && !i.daily) { i.daily = { from: todayStr() }; toast('Counted as taken every day from today'); }
@@ -1650,9 +1725,22 @@ function onClick(ev) {
     }
     case 'medotheradd': addMedOther($('input', t.closest('.adder'))); break;
     case 'medpdf': makeMedPDF(); break;
+    case 'medopen': {
+      const n = t.dataset.v;
+      if (medOpen.has(n) || medEdit === n) { medOpen.delete(n); if (medEdit === n) medEdit = null; } else medOpen.add(n);
+      doseEdit = null; render(); { const el = document.getElementById('med-' + fileSafe(n)); if (el && medOpen.has(n)) el.scrollIntoView({ block: 'nearest' }); } break;
+    }
+    case 'medaddopen': medAddOpen = true; render(); { const el = $('#s-newmed'); if (el) { el.scrollIntoView({ block: 'center' }); el.focus(); } } break;
+    case 'medrename': {
+      const old = t.dataset.v, inp = $(`#medname-${fileSafe(old)}`), v = (inp && inp.value || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+      if (!v) { toast('Type a name first'); return; }
+      const nn = renameMed(old, v); save(); render(); toast(nn === old ? 'Saved' : `Renamed to ${nn}`); break;
+    }
+    case 'doseedit': doseEdit = { n: t.dataset.med, d: t.dataset.v }; render(); { const el = $('.adder input[data-kind="mdoseedit"]'); if (el) { el.focus(); el.select(); } } break;
+    case 'dosesave': saveDoseEdit($('input', t.closest('.adder'))); break;
     case 'deldose': {
       const m = t.dataset.med; S.medDoses[m] = (S.medDoses[m] || []).filter(x => x !== t.dataset.v);
-      if (!S.medDoses[m].length) delete S.medDoses[m]; save(); render(); break;
+      if (!S.medDoses[m].length) delete S.medDoses[m]; doseEdit = null; save(); render(); break;
     }
     case 'delmed':
       if (!confirm(`Remove ${t.dataset.v} from your medications? Past entries keep it.`)) return;
@@ -1769,7 +1857,7 @@ document.addEventListener('input', onInput);
 document.addEventListener('change', onChange);
 document.addEventListener('keydown', ev => {
   const inp = ev.target.closest && ev.target.closest('.adder input');
-  if (inp && ev.key === 'Enter') { ev.preventDefault(); if (inp.dataset.kind === 'mdose' || inp.dataset.kind === 'mse') addMedOther(inp); else addOther(inp.closest('.card[data-cid]'), inp.dataset.kind, inp); }
+  if (inp && ev.key === 'Enter') { ev.preventDefault(); if (inp.dataset.kind === 'mdoseedit') saveDoseEdit(inp); else if (inp.dataset.kind === 'mdose' || inp.dataset.kind === 'mse') addMedOther(inp); else addOther(inp.closest('.card[data-cid]'), inp.dataset.kind, inp); }
 });
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredInstall = e; if (unlocked) render(); });
 document.addEventListener('visibilitychange', () => {
@@ -1784,6 +1872,7 @@ document.addEventListener('visibilitychange', () => {
 });
 let lastSeenToday = todayStr();
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+fixMedNames();
 initUpdates();
 applyPrefs(); // so the PIN screen uses the chosen colors too
 if (!lockIfNeeded()) render();

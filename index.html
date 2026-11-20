@@ -195,6 +195,14 @@ input[type=range].sev.locked{ opacity:.55; pointer-events:none; }
 .strip i.on.daily{ background:#0e7c74; }
 .strip-lbl{ display:flex; justify-content:space-between; font-size:.72em; color:var(--muted); margin-top:2px; }
 .helpbar{ display:flex; height:10px; border-radius:99px; overflow:hidden; margin-top:10px; gap:2px; }
+.medcard{ padding:10px 14px; margin-bottom:10px; }
+.medsum{ display:flex; align-items:center; gap:10px; width:100%; min-height:52px; background:none; border:0; padding:0; text-align:left; color:var(--text); }
+.medsum .micon{ font-size:1.4em; }
+.medsum .grow{ flex:1; min-width:0; overflow-wrap:anywhere; }
+.medsum b{ font-size:1.05em; }
+.medsum .daily{ font-size:.7em; padding:2px 7px; vertical-align:1px; }
+.medsum .chev{ color:var(--muted); font-size:1.2em; }
+.medsum[aria-expanded="true"]{ padding-bottom:6px; border-bottom:1px solid var(--line); margin-bottom:4px; }
 .change-note{ margin-top:10px; background:var(--warn-soft); border:1px solid var(--line); border-radius:12px; padding:10px 12px; font-size:.92em; }
 .change-note .row{ display:flex; gap:8px; margin-top:8px; }
 .change-note .row .btn{ flex:1; }
