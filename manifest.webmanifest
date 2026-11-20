@@ -1,0 +1,26 @@
+{
+  "id": "/health-log/",
+  "name": "Vet Health Log",
+  "short_name": "Health Log",
+  "description": "Private daily symptom log for VA disability claims. Your data stays on your phone.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#142850",
+  "theme_color": "#142850",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
