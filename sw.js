@@ -1,5 +1,5 @@
 /* Offline support: caches the app so it opens with no internet. Bump VERSION when files change. */
-const VERSION = 'vhl-1.0.0';
+const VERSION = 'vhl-1.2.0';
 const FILES = ['./', 'index.html', 'app.js', 'manifest.webmanifest', 'jspdf.umd.min.js', 'qrcode.min.js', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {

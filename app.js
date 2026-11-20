@@ -3,7 +3,7 @@
 'use strict';
 
 const APP_NAME = 'Vet Health Log';
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.2.0';
 const STORE_KEY = 'vhl-data-v1';
 const RELOCK_MS = 3 * 60 * 1000;
 
@@ -24,6 +24,7 @@ const SIDE = ['Left', 'Right', 'Both'];
 /* Condition-specific questions. t: check | choice | multi | num */
 const FIELDS = {
   back: [
+    { k: 'where',   t: 'multi', l: 'Where does it hurt?', s: 'Where', opts: ['Neck', 'Upper back', 'Middle back', 'Lower back', 'Left side', 'Right side', 'Tailbone'] },
     { k: 'radiate', t: 'check', l: 'Pain shot down legs or arms' },
     { k: 'numb',    t: 'check', l: 'Numbness or tingling' },
     { k: 'bend',    t: 'check', l: 'Trouble bending, lifting, or twisting' },
@@ -32,6 +33,7 @@ const FIELDS = {
   ],
   knees: [
     { k: 'side',    t: 'choice', l: 'Which knee', opts: SIDE },
+    { k: 'where',   t: 'multi', l: 'Where on the knee?', s: 'Where', opts: ['Front / kneecap', 'Inside', 'Outside', 'Back of knee'] },
     { k: 'giveway', t: 'check', l: 'Knee gave way / felt unstable' },
     { k: 'swell',   t: 'check', l: 'Swelling' },
     { k: 'lock',    t: 'check', l: 'Locking or catching' },
@@ -39,6 +41,7 @@ const FIELDS = {
     { k: 'brace',   t: 'check', l: 'Used a brace, cane, or walker' },
   ],
   head: [
+    { k: 'where',  t: 'multi', l: 'Where is the pain?', s: 'Where', opts: ['Front / forehead', 'Top', 'Back of head', 'Left side', 'Right side', 'Temples', 'Behind the eyes', 'Whole head'] },
     { k: 'count',  t: 'num', l: 'How many headaches today?', s: 'Headaches', max: 20 },
     { k: 'hours',  t: 'num', l: 'How many hours did it last?', s: 'Lasted (hrs)', max: 24, step: 0.5 },
     { k: 'light',  t: 'check', l: 'Sensitive to light or sound' },
@@ -47,6 +50,7 @@ const FIELDS = {
     { k: 'dark',   t: 'check', l: 'Had to be in a dark, quiet room' },
   ],
   gi: [
+    { k: 'where', t: 'multi', l: 'Where is the pain?', s: 'Where', opts: ['Upper stomach', 'Lower stomach', 'Left side', 'Right side', 'All over'] },
     { k: 'episodes', t: 'num', l: 'Number of episodes / urgent bathroom trips', s: 'Episodes', max: 40 },
     { k: 'sx', t: 'multi', l: 'Symptoms', opts: ['Diarrhea', 'Constipation', 'Nausea', 'Vomiting', 'Heartburn / reflux', 'Cramping / pain', 'Bloating', 'Accident / could not make it'] },
   ],
@@ -71,7 +75,7 @@ const FIELDS = {
     { k: 'awake', t: 'check', l: 'Ringing kept me awake' },
   ],
   joints: [
-    { k: 'where', t: 'multi', l: 'Where?', opts: ['Left shoulder', 'Right shoulder', 'Left hip', 'Right hip', 'Left elbow', 'Right elbow', 'Left wrist / hand', 'Right wrist / hand', 'Other'] },
+    { k: 'where', t: 'multi', l: 'Where?', s: 'Where', opts: ['Left shoulder', 'Right shoulder', 'Left hip', 'Right hip', 'Left elbow', 'Right elbow', 'Left wrist / hand', 'Right wrist / hand', 'Other'] },
     { k: 'overhead', t: 'check', l: 'Could not raise arm overhead / reach' },
     { k: 'motion', t: 'check', l: 'Limited movement or stiffness' },
     { k: 'swell',  t: 'check', l: 'Swelling' },
@@ -80,6 +84,7 @@ const FIELDS = {
   ],
   feet: [
     { k: 'side', t: 'choice', l: 'Which side', opts: SIDE },
+    { k: 'where', t: 'multi', l: 'Where on the foot?', s: 'Where', opts: ['Heel', 'Arch', 'Ball of foot', 'Toes', 'Top of foot', 'Ankle'] },
     { k: 'standmin', t: 'num', l: 'Minutes you could stand or walk before stopping', s: 'Could stand/walk (min)', max: 600, step: 5 },
     { k: 'morning', t: 'check', l: 'Bad pain with first steps in the morning' },
     { k: 'swell', t: 'check', l: 'Swelling' },
@@ -87,6 +92,36 @@ const FIELDS = {
     { k: 'limp', t: 'check', l: 'Limped or changed how I walked' },
   ],
 };
+/* Icons for conditions people add themselves: matched from the name, changeable in Settings */
+const ICON_RULES = [
+  [/\b(ed|erectile|sexual|impoten\w*|prostat\w*|testic\w*|penis|libido)\b/i, '♂️'],
+  [/\b(gyn\w*|menstr\w*|uter\w*|ovar\w*|pelvic floor|endometri\w*|breast)\b/i, '♀️'],
+  [/\b(bladder|urin\w*|incontinen\w*|kidney|renal)\b/i, '💧'],
+  [/\b(hand|hands|wrist|wrists|finger|fingers|thumb|carpal|grip)\b/i, '✋'],
+  [/\b(leg|legs|thigh|calf|calves|shin|shins|sciatica|hamstring|radiculopathy)\b/i, '🦵'],
+  [/\b(foot|feet|toe|toes|ankle|ankles|heel|plantar|bunion)\b/i, '🦶'],
+  [/\b(knee|knees|patella\w*|meniscus|acl)\b/i, '🦵'],
+  [/\b(arm|arms|elbow|elbows|shoulder|shoulders|rotator|bicep\w*|tricep\w*)\b/i, '💪'],
+  [/\b(back|spine|spinal|neck|cervical|lumbar|disc|disk|hip|hips|pelvis|arthritis|bone|bones|fibromyalgia)\b/i, '🦴'],
+  [/\b(eye|eyes|vision|sight|glaucoma|cataract\w*|retina\w*)\b/i, '👁️'],
+  [/\b(ear|ears|hearing|tinnitus|vertigo|dizz\w*|meniere\w*)\b/i, '👂'],
+  [/\b(tooth|teeth|dental|jaw|tmj|gum|gums)\b/i, '🦷'],
+  [/\b(lung|lungs|asthma|breath\w*|copd|respirat\w*|burn pits?|bronch\w*|emphysema|cough)\b/i, '🫁'],
+  [/\b(heart|cardi\w*|hypertension|blood pressure|bp|chest|arrhythmia|afib)\b/i, '❤️'],
+  [/\b(diabet\w*|blood sugar|glucose|insulin|anemia|blood)\b/i, '🩸'],
+  [/\b(skin|rash|rashes|eczema|psoria\w*|acne|scar|scars|derma\w*|hives|chloracne|sores?|wounds?|burns?)\b/i, '🩹'],
+  [/\b(nerve|nerves|neuropath\w*|numb\w*|tingl\w*|neuralgia)\b/i, '⚡'],
+  [/\b(sinus\w*|allerg\w*|rhinitis|nasal|nose)\b/i, '🤧'],
+  [/\b(tbi|brain|concussion|memory|ptsd|anxiety|depress\w*|mental|mood|bipolar|stress)\b/i, '🧠'],
+  [/\b(sleep|apnea|insomnia|nightmares?)\b/i, '😴'],
+  [/\b(stomach|gerd|ibs|reflux|bowel|gastr\w*|colon|digest\w*|crohn\w*|liver|gallbladder|hernia)\b/i, '🤢'],
+  [/\b(head|headaches?|migraines?)\b/i, '🤕'],
+  [/\b(fatigue|tired|energy|gulf war)\b/i, '🥱'],
+  [/\b(cancer|tumou?r|lymphoma|leukemia|melanoma)\b/i, '🎗️'],
+  [/\b(fever|infection|thyroid|hormones?)\b/i, '🌡️'],
+];
+const ICON_CHOICES = ['🦴', '🦵', '🦶', '💪', '✋', '🤕', '🧠', '👁️', '👂', '🦷', '🫁', '❤️', '🩸', '🤢', '🩹', '⚡', '🤧', '😴', '🥱', '♂️', '♀️', '💧', '🎗️', '🌡️', '🔥', '🩺', '💊', '🚶', '🧍', '📝'];
+function guessIcon(name) { for (const [re, ic] of ICON_RULES) if (re.test(name || '')) return ic; return '📝'; }
 const IMPACTS = ['Missed work', 'Left work early', 'Could not do chores', 'Could not drive', 'Cancelled plans', 'Needed help from someone', 'Doctor / ER / VA visit'];
 const MED_HELP = ['Yes', 'A little', 'No'];
 const CRISIS_TEL = 'tel:988';
@@ -118,7 +153,9 @@ function freshState() {
     profile: { name: '' },
     conditions: CATALOG.map(c => ({ id: c.id, name: c.name, icon: c.icon, on: false, custom: false })),
     entries: {},
-    settings: { onboarded: false, bigText: false, pinHash: null, pinSalt: null, lastBackup: null, backupSnooze: null, installDismissed: false },
+    meds: [],                    // "My medications"
+    custom: { sx: {}, imp: [] }, // saved write-ins: symptoms per condition, daily-life effects
+    settings: { onboarded: false, bigText: false, pinHash: null, pinSalt: null, lastBackup: null, backupSnooze: null, installDismissed: false, compact: true, reminderTime: '20:00' },
   };
 }
 let S = load();
@@ -134,6 +171,18 @@ function load() {
     // add any new catalog conditions that older data lacks
     s.conditions = s.conditions || [];
     for (const c of base.conditions) if (!s.conditions.find(x => x.id === c.id)) s.conditions.push(c);
+    for (const c of s.conditions) if (c.custom && (!c.icon || c.icon === '📝')) c.icon = guessIcon(c.name);
+    s.meds = Array.isArray(s.meds) ? s.meds : [];
+    s.custom = Object.assign({ sx: {}, imp: [] }, s.custom || {});
+    // v1.0 stored one medication as text; convert to the list format
+    for (const d in s.entries) for (const cid in s.entries[d]) {
+      const e = s.entries[d][cid];
+      if (e.med != null) {
+        if (!e.meds && e.med) e.meds = [Object.assign({ n: e.med }, e.medHelp ? { h: e.medHelp } : {})];
+        if (e.med && !s.meds.includes(e.med)) s.meds.push(e.med);
+        delete e.med; delete e.medHelp;
+      }
+    }
     return s;
   } catch (e) { console.error(e); return freshState(); }
 }
@@ -175,6 +224,7 @@ let tab = 'today';
 let curDate = todayStr();
 const expanded = new Set();
 let histCond = null, histRange = 30;
+let iconPickFor = null;
 let deferredInstall = null;
 let unlocked = false;
 let hiddenAt = 0;
@@ -192,6 +242,7 @@ function toast(msg) {
 function applyPrefs() {
   const root = document.documentElement;
   root.classList.toggle('big', !!S.settings.bigText);
+  root.classList.toggle('compact', S.settings.compact !== false);
   const theme = S.settings.theme || 'auto';
   if (theme === 'auto') delete root.dataset.theme; else root.dataset.theme = theme;
 }
@@ -271,12 +322,63 @@ function renderToday() {
     ${conds.map(renderCard).join('')}
     <p class="small muted" style="text-align:center">Changes save automatically.</p>`;
 }
+/* Severity readings. e.sev = worst of the day (used in charts & reports).
+   e.log = [{t:'HH:MM', v}] readings in order, when the rating changed during the day. */
+function nowHM() { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+function fmtHM(hm) { if (!hm) return 'earlier'; const [h, m] = hm.split(':').map(Number); const d = new Date(); d.setHours(h, m, 0, 0); return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }); }
+function minutesSince(hm) { if (!hm) return Infinity; const [h, m] = hm.split(':').map(Number); const d = new Date(); return (d.getHours() * 60 + d.getMinutes()) - (h * 60 + m); }
+function latestSev(e) { return e && e.log && e.log.length ? e.log[e.log.length - 1].v : (e && e.sev != null ? e.sev : null); }
+function recalcSev(e) { if (e.log && e.log.length) e.sev = Math.max(...e.log.map(r => r.v)); if (e.log && e.log.length < 2 && !e.log[0]?.t) delete e.log; }
+function timelineText(e, arrow = ' → ') { return (e.log || []).map(r => `${r.v}${r.t ? ` at ${fmtHM(r.t)}` : ''}`).join(arrow); }
+const pendingChange = {}; // cid -> {from, to, t} shown under the bar until dismissed
+
+function setSeverity(cid, v) {
+  const e = ensureEntry(curDate, cid);
+  const prev = latestSev(e);
+  if (curDate !== todayStr()) {          // past day: just correct it
+    if (e.log && e.log.length) { e.log[e.log.length - 1].v = v; recalcSev(e); } else e.sev = v;
+    return;
+  }
+  if (prev == null) { e.sev = v; e.log = [{ t: nowHM(), v }]; return; }
+  if (prev === v) return;
+  if (!e.log || !e.log.length) e.log = [{ t: null, v: prev }];
+  const last = e.log[e.log.length - 1];
+  if (minutesSince(last.t) <= 2) {         // still adjusting the same rating
+    last.v = v;
+    if (pendingChange[cid]) pendingChange[cid].to = v;
+    if (pendingChange[cid] && pendingChange[cid].from === v) { e.log.pop(); delete pendingChange[cid]; }
+  } else {
+    e.log.push({ t: nowHM(), v });
+    pendingChange[cid] = { from: prev, to: v, t: nowHM() };
+  }
+  recalcSev(e);
+}
+function fixMistake(cid) {                 // the change was a correction, not a real change
+  const e = getEntry(curDate, cid); const p = pendingChange[cid];
+  if (!e || !p || !e.log || e.log.length < 2) { delete pendingChange[cid]; return; }
+  e.log.pop(); e.log[e.log.length - 1].v = p.to; recalcSev(e); delete pendingChange[cid];
+}
+
+/* Medications: my list, with the ones used most for this condition first */
+function medOptions(cid, e) {
+  const count = {};
+  for (const d in S.entries) { const x = S.entries[d][cid]; if (x && x.meds) for (const m of x.meds) count[m.n] = (count[m.n] || 0) + 1; }
+  const list = S.meds.slice();
+  for (const m of (e.meds || [])) if (!list.includes(m.n)) list.push(m.n);
+  return list.sort((a, b) => (count[b] || 0) - (count[a] || 0));
+}
+function otherAdder(kind, label) {
+  return `<button class="chip add" data-act="other" data-kind="${kind}">＋ ${label || 'Other (write in)'}</button>`;
+}
+
 function renderCard(c) {
   const e = getEntry(curDate, c.id);
-  const sev = e && e.sev != null ? e.sev : null;
-  const hasDetail = e && Object.keys(e).some(k => k !== 'c' && k !== 'sev');
+  const sev = latestSev(e);
+  const hasDetail = e && Object.keys(e).some(k => k !== 'c' && k !== 'sev' && k !== 'log');
   const status = sev != null ? `<span class="status ok">✓ Logged</span>` : hasDetail ? `<span class="status part">Rate severity</span>` : `<span class="status">Not logged</span>`;
   const open = expanded.has(c.id);
+  const yest = !e && getEntry(addDays(curDate, -1), c.id);
+  const p = pendingChange[c.id];
   return `<section class="card" data-cid="${c.id}">
     <div class="card-head"><span class="cicon" aria-hidden="true">${c.icon || '📝'}</span><h2>${esc(c.name)}</h2>${status}</div>
     <div class="sev-row">
@@ -284,7 +386,11 @@ function renderCard(c) {
       <div class="sev-val"><b style="color:${sevColor(sev)}">${sev ?? '–'}</b><span>${sevWord(sev)}</span></div>
     </div>
     <div class="scale-labels"><span>0 None</span><span>5</span><span>10 Worst</span></div>
+    ${p ? `<div class="change-note" role="status"><b>${p.to > p.from ? '⬆ Got worse' : '⬇ Got better'}: ${p.from} → ${p.to} at ${fmtHM(p.t)}</b><br><span class="small">Saved as a change during the day. Only meant to correct the first rating?</span>
+      <div class="row"><button class="btn small" data-act="keepchange">✓ Yes, it changed</button><button class="btn ghost small" data-act="fixmistake">Fix my mistake</button></div></div>`
+      : e && e.log && e.log.length > 1 ? `<div class="timeline small">Today: ${esc(timelineText(e))} · <b>worst ${e.sev}</b></div>` : ''}
     <div class="card-actions">
+      ${yest ? `<button class="btn ghost small" data-act="sameyest">↻ Same as yesterday</button>` : ''}
       ${sev == null ? `<button class="btn ghost small" data-act="nosx">No symptoms (0)</button>` : ''}
       <button class="btn secondary small" data-act="toggle" aria-expanded="${open}">${open ? 'Hide details ▴' : 'More details ▾'}</button>
     </div>
@@ -301,24 +407,34 @@ function crisisLine(e) {
   return `<div class="crisis">Need to talk now? Veterans Crisis Line: <a href="${CRISIS_TEL}">call 988, press 1</a> or <a href="${CRISIS_SMS}">text 838255</a>.</div>`;
 }
 function renderDetails(c, e) {
-  const specific = (FIELDS[c.id] || []).map(f => renderField(f, e.x || {}, 'x.')).join('');
+  const x = e.x || {};
+  const specific = (FIELDS[c.id] || []).map(f => renderField(f, x, 'x.')).join('');
+  const mine = S.custom.sx[c.id] || [];
+  const otherRow = `<div class="field"><div class="lbl">${mine.length ? 'Your own items' : 'Something not listed?'}</div><div class="chips">
+      ${mine.map(o => `<button class="chip check" data-f="x.other" data-multi="${esc(o)}" aria-pressed="${(x.other || []).includes(o)}">${esc(o)}</button>`).join('')}
+      ${otherAdder('sx')}</div></div>`;
   const isHead = c.id === 'head';
+  const meds = medOptions(c.id, e);
+  const taken = e.meds || [];
   return `
-    ${specific ? `<div class="subhead">About this condition</div>${specific}` : ''}
+    <div class="subhead">About this condition</div>${specific}${otherRow}
     <div class="subhead">Flare-ups</div>
     ${yesNo('flare', 'Did you have a flare-up (worse than usual)?', e.flare)}
     ${yesNo('lay', isHead ? 'Did you have to stop everything and lie down? (prostrating attack)' : 'Did you have to stop and lie down or rest?', e.lay)}
     ${e.lay === true ? numField({ k: 'layHrs', l: 'About how many hours?', max: 24, step: 0.5 }, e.layHrs, '') : ''}
     <div class="subhead">Effect on work & daily life</div>
     <div class="field"><div class="chips">
-      ${IMPACTS.map(i => `<button class="chip check" data-f="imp" data-multi="${esc(i)}" aria-pressed="${(e.imp || []).includes(i)}">${esc(i)}</button>`).join('')}
+      ${IMPACTS.concat(S.custom.imp).map(i => `<button class="chip check" data-f="imp" data-multi="${esc(i)}" aria-pressed="${(e.imp || []).includes(i)}">${esc(i)}</button>`).join('')}
+      ${otherAdder('imp')}
     </div></div>
     <div class="subhead">Medication</div>
-    <div class="field"><label for="med-${c.id}">What did you take? (name, amount)</label>
-      <input type="text" id="med-${c.id}" data-f="med" value="${esc(e.med || '')}" placeholder="e.g. Ibuprofen 800mg"></div>
-    <div class="field"><div class="lbl">Did it help?</div><div class="chips">
-      ${MED_HELP.map(o => `<button class="chip" data-f="medHelp" data-choice="${o}" aria-pressed="${e.medHelp === o}">${o}</button>`).join('')}
-    </div></div>
+    <div class="field"><div class="lbl">What did you take? Tap all that apply.</div><div class="chips">
+      ${meds.map(m => `<button class="chip check" data-act="med" data-v="${esc(m)}" aria-pressed="${taken.some(t => t.n === m)}">${esc(m)}</button>`).join('')}
+      ${otherAdder('med', meds.length ? 'Other medication' : 'Add a medication')}
+    </div>${meds.length ? '' : '<p class="small muted">Tip: list the medications you use in Settings → My medications, then just tap them here.</p>'}</div>
+    ${taken.map((m, i) => `<div class="field"><div class="lbl">Did ${esc(m.n)} help?</div><div class="chips">
+      ${MED_HELP.map(o => `<button class="chip" data-act="medhelp" data-i="${i}" data-v="${o}" aria-pressed="${m.h === o}">${o}</button>`).join('')}
+    </div></div>`).join('')}
     <div class="subhead">Notes</div>
     <div class="field"><label for="notes-${c.id}">What happened? Triggers, what you couldn't do, appointments…</label>
       <textarea id="notes-${c.id}" data-f="notes">${esc(e.notes || '')}</textarea></div>
@@ -432,7 +548,7 @@ function chartSVG(cid, from, to) {
 
 /* ---------- Stats & summaries (shared with reports) ---------- */
 function computeStats(cid, list) {
-  const st = { days: list.length, rated: 0, sum: 0, max: null, severe: 0, flare: 0, lay: 0, layHrs: 0, imp: {}, sx: {}, medDays: 0, months: {}, headCount: 0 };
+  const st = { days: list.length, rated: 0, sum: 0, max: null, severe: 0, flare: 0, lay: 0, layHrs: 0, imp: {}, sx: {}, medDays: 0, meds: {}, changeDays: 0, months: {}, headCount: 0 };
   const fields = FIELDS[cid] || [];
   for (const [d, e] of list) {
     const m = d.slice(0, 7);
@@ -443,12 +559,15 @@ function computeStats(cid, list) {
     if (e.lay) { st.lay++; mo.lay++; st.layHrs += Number(e.layHrs || 0); }
     for (const i of e.imp || []) st.imp[i] = (st.imp[i] || 0) + 1;
     if ((e.imp || []).includes('Missed work')) mo.missed++;
-    if (e.med) st.medDays++;
+    if (e.meds && e.meds.length) st.medDays++;
+    for (const md of e.meds || []) { const r = st.meds[md.n] = st.meds[md.n] || { days: 0, Yes: 0, 'A little': 0, No: 0 }; r.days++; if (md.h) r[md.h]++; }
+    if (e.log && e.log.length > 1) st.changeDays++;
     const x = e.x || {};
     for (const f of fields) {
       if (f.t === 'check' && x[f.k]) st.sx[f.l] = (st.sx[f.l] || 0) + 1;
-      if (f.t === 'multi') for (const o of x[f.k] || []) st.sx[o] = (st.sx[o] || 0) + 1;
+      if (f.t === 'multi') for (const o of x[f.k] || []) { const k = f.s === 'Where' ? `Location: ${o}` : o; st.sx[k] = (st.sx[k] || 0) + 1; }
     }
+    for (const o of x.other || []) st.sx[o] = (st.sx[o] || 0) + 1;
     if (cid === 'head') st.headCount += Number(x.count || 0);
   }
   st.avg = st.rated ? st.sum / st.rated : null;
@@ -462,13 +581,15 @@ function summaryLine(cid, e, maxLen) {
     if (v == null || v === '' || (Array.isArray(v) && !v.length)) continue;
     if (f.t === 'check') parts.push(f.l);
     else if (f.t === 'choice') parts.push(`${f.l}: ${v}`);
-    else if (f.t === 'multi') parts.push(v.join(', '));
+    else if (f.t === 'multi') parts.push(f.s ? `${f.s}: ${v.join(', ')}` : v.join(', '));
     else if (f.t === 'num') parts.push(`${f.s || f.l}: ${v}`);
   }
+  if (x.other && x.other.length) parts.push(x.other.join(', '));
+  if (e.log && e.log.length > 1) parts.push(`Changed during day: ${timelineText(e)}`);
   if (e.flare) parts.push('Flare-up');
   if (e.lay) parts.push(`Had to lie down${e.layHrs ? ` ${e.layHrs} hrs` : ''}`);
   if (e.imp && e.imp.length) parts.push(e.imp.join(', '));
-  if (e.med) parts.push(`Meds: ${e.med}${e.medHelp ? ` (helped: ${e.medHelp})` : ''}`);
+  if (e.meds && e.meds.length) parts.push(`Meds: ${e.meds.map(m => m.n + (m.h ? ` (helped: ${m.h})` : '')).join(', ')}`);
   if (e.notes) parts.push(`Notes: ${e.notes}`);
   let s = parts.join('. ');
   if (maxLen && s.length > maxLen) s = s.slice(0, maxLen - 1) + '…';
@@ -541,12 +662,12 @@ function makeCSV() {
   const conds = selectedReportConds();
   if (!conds.length) return toast('Pick at least one condition first');
   const [from, to] = reportRange();
-  const head = ['Date', 'Condition', 'Severity (0-10)', 'Severity word', 'Flare-up', 'Had to lie down', 'Lie-down hours', 'Effect on work/life', 'Medication', 'Medication helped', 'Condition details', 'Notes', 'Date recorded'];
+  const head = ['Date', 'Condition', 'Severity (0-10, worst of day)', 'Severity word', 'Changes during day', 'Flare-up', 'Had to lie down', 'Lie-down hours', 'Effect on work/life', 'Medications (helped?)', 'Condition details', 'Notes', 'Date recorded'];
   const rows = [head];
   for (const c of conds) {
     for (const [d, e] of entriesFor(c.id, from, to)) {
       const detail = summaryLine(c.id, { x: e.x }, 0);
-      rows.push([d, c.name, e.sev ?? '', sevWord(e.sev ?? null), e.flare === true ? 'Yes' : e.flare === false ? 'No' : '', e.lay === true ? 'Yes' : e.lay === false ? 'No' : '', e.layHrs ?? '', (e.imp || []).join('; '), e.med || '', e.medHelp || '', detail, rep.notes ? (e.notes || '') : '', e.c || '']);
+      rows.push([d, c.name, e.sev ?? '', sevWord(e.sev ?? null), e.log && e.log.length > 1 ? timelineText(e, ' -> ') : '', e.flare === true ? 'Yes' : e.flare === false ? 'No' : '', e.lay === true ? 'Yes' : e.lay === false ? 'No' : '', e.layHrs ?? '', (e.imp || []).join('; '), (e.meds || []).map(m => m.n + (m.h ? ` (${m.h})` : '')).join('; '), detail, rep.notes ? (e.notes || '') : '', e.c || '']);
     }
   }
   if (rows.length === 1) return toast('No entries for those conditions in that time period');
@@ -556,7 +677,7 @@ function makeCSV() {
 }
 
 function pdfText(s) { // keep to characters the built-in PDF font can draw
-  return String(s ?? '').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-').replace(/…/g, '...').replace(/[^\x09\x0A\x0D\x20-\x7E -ÿ]/g, '');
+  return String(s ?? '').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-').replace(/…/g, '...').replace(/→/g, '->').replace(/[^\x09\x0A\x0D\x20-\x7E -ÿ]/g, '');
 }
 function makePDF() {
   const conds = selectedReportConds();
@@ -669,9 +790,27 @@ function makePDF() {
       y += 8;
     }
 
+    // Medications
+    const medRows = Object.entries(st.meds).sort((a, b) => b[1].days - a[1].days);
+    if (medRows.length) {
+      need(40);
+      text('Medications taken for this condition', M, 13, 'bold', navy); y += 16;
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(20, 20, 20);
+      for (const [name, r] of medRows) {
+        need(15);
+        const helped = ['Yes', 'A little', 'No'].filter(k => r[k]).map(k => `${k.toLowerCase()} ${r[k]}`).join(', ');
+        doc.text(pdfText(name), M, y);
+        doc.text(pdfText(`${r.days} day${r.days === 1 ? '' : 's'}${helped ? `  (helped: ${helped})` : ''}`), M + CW, y, { align: 'right' });
+        y += 14;
+      }
+      y += 8;
+    }
+
     // Daily entries
     need(50);
-    text('Daily entries', M, 13, 'bold', navy); y += 16;
+    text('Daily entries', M, 13, 'bold', navy); y += 13;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(110, 110, 120);
+    doc.text('Severity is the worst rating of the day. If it changed during the day, each reading and time is listed.', M, y); y += 14;
     doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(90, 95, 110);
     doc.text('Date', M, y); doc.text('Severity', M + 74, y); doc.text('Details', M + 130, y);
     y += 4; doc.line(M, y, M + CW, y); y += 12;
@@ -717,18 +856,41 @@ function renderSettings() {
     <div class="card">
       <h2 style="font-size:1.05em">My conditions</h2>
       <p class="small muted">Turn on what you track. Turning one off hides it but keeps its history.</p>
-      ${S.conditions.map(c => `<div class="row-item"><span aria-hidden="true">${c.icon || '📝'}</span><div class="grow">${esc(c.name)}${c.custom ? ' <span class="muted small">(yours)</span>' : ''}</div>
-        ${c.custom ? `<button class="btn ghost small" data-act="delcond" data-cid="${c.id}" aria-label="Remove ${esc(c.name)}">Remove</button>` : ''}
-        <label class="switch"><input type="checkbox" data-act="togglecond" data-cid="${c.id}" ${c.on ? 'checked' : ''} aria-label="Track ${esc(c.name)}"><span></span></label></div>`).join('')}
-      <div class="field"><label for="s-newcond">Add your own (e.g. Asthma, Hypertension, Skin condition)</label>
-        <div style="display:flex;gap:8px"><input type="text" id="s-newcond" placeholder="Condition name"><button class="btn" data-act="addcond">Add</button></div></div>
+      <p class="small muted">Tap an icon to change it. Use ▲ ▼ to set the order on your Daily Log.</p>
+      ${S.conditions.map((c, i) => `<div class="row-item cond-row">
+        <button class="iconbtn" data-act="pickicon" data-cid="${c.id}" aria-label="Change icon for ${esc(c.name)}" aria-expanded="${iconPickFor === c.id}">${c.icon || '📝'}</button>
+        <div class="grow">${esc(c.name)}${c.custom ? ' <span class="muted small">(yours)</span>' : ''}</div>
+        <button class="mv" data-act="moveup" data-cid="${c.id}" aria-label="Move ${esc(c.name)} up" ${i === 0 ? 'disabled' : ''}>▲</button>
+        <button class="mv" data-act="movedown" data-cid="${c.id}" aria-label="Move ${esc(c.name)} down" ${i === S.conditions.length - 1 ? 'disabled' : ''}>▼</button>
+        <label class="switch"><input type="checkbox" data-act="togglecond" data-cid="${c.id}" ${c.on ? 'checked' : ''} aria-label="Track ${esc(c.name)}"><span></span></label></div>
+        ${iconPickFor === c.id ? `<div class="iconpick"><div class="lbl small">Choose an icon for ${esc(c.name)}</div><div class="icongrid">${ICON_CHOICES.map(ic => `<button data-act="seticon" data-cid="${c.id}" data-v="${ic}" aria-pressed="${c.icon === ic}">${ic}</button>`).join('')}</div>
+          ${c.custom ? `<button class="btn ghost small" data-act="delcond" data-cid="${c.id}" style="margin-top:8px;color:var(--danger)">Remove this condition</button>` : ''}</div>` : ''}`).join('')}
+      <div class="field"><label for="s-newcond">Add your own (e.g. Asthma, Hypertension, ED, Hands)</label>
+        <div style="display:flex;gap:8px;align-items:center"><span class="iconprev" id="newcond-icon" aria-hidden="true">📝</span><input type="text" id="s-newcond" placeholder="Condition name"><button class="btn" data-act="addcond">Add</button></div></div>
     </div>
+    <div class="card">
+      <h2 style="font-size:1.05em">💊 My medications</h2>
+      <p class="small muted">Medications you take or use. They show as quick-tap buttons when you log any condition. Ones you write in while logging are added here automatically.</p>
+      ${S.meds.map(m => `<div class="row-item"><div class="grow">${esc(m)}</div><button class="btn ghost small" data-act="delmed" data-v="${esc(m)}" aria-label="Remove ${esc(m)}">Remove</button></div>`).join('') || '<p class="small muted"><i>None yet.</i></p>'}
+      <div class="field"><label for="s-newmed">Add a medication (name and dose)</label>
+        <div style="display:flex;gap:8px"><input type="text" id="s-newmed" placeholder="e.g. Ibuprofen 800mg"><button class="btn" data-act="addmed">Add</button></div></div>
+    </div>
+    ${savedChoicesCard()}
     <div class="card">
       <h2 style="font-size:1.05em">Display</h2>
       <div class="field"><div class="lbl">Color scheme</div><div class="chips" role="group" aria-label="Color scheme">
         ${[['auto', '📱 Match phone'], ['light', '☀️ Light'], ['dark', '🌙 Dark']].map(([v, l]) => `<button class="chip" data-act="theme" data-v="${v}" aria-pressed="${(S.settings.theme || 'auto') === v}">${l}</button>`).join('')}
       </div></div>
-      <div class="row-item" style="margin-top:10px"><div class="grow">Larger text</div><label class="switch"><input type="checkbox" data-act="bigtext" ${S.settings.bigText ? 'checked' : ''} aria-label="Larger text"><span></span></label></div>
+      <div class="row-item" style="margin-top:10px"><div class="grow">Compact Daily Log<br><span class="small muted">Smaller cards, less scrolling</span></div><label class="switch"><input type="checkbox" data-act="compact" ${S.settings.compact !== false ? 'checked' : ''} aria-label="Compact Daily Log"><span></span></label></div>
+      <div class="row-item"><div class="grow">Larger text</div><label class="switch"><input type="checkbox" data-act="bigtext" ${S.settings.bigText ? 'checked' : ''} aria-label="Larger text"><span></span></label></div>
+    </div>
+    <div class="card">
+      <h2 style="font-size:1.05em">⏰ Daily reminder</h2>
+      <p class="small muted">Adds a repeating event to your phone's calendar so it reminds you every day. Do this once. To stop it later, delete the event in your calendar.</p>
+      <div class="field"><label for="s-remtime">Remind me at</label><input type="time" id="s-remtime" value="${esc(S.settings.reminderTime || '20:00')}"></div>
+      <button class="btn block" data-act="remind-ics" style="margin-top:10px">${isIOS() ? '📅 Add to iPhone Calendar' : '📅 Add to my calendar'}</button>
+      <button class="btn secondary block" data-act="remind-google" style="margin-top:10px">Add to Google Calendar</button>
+      <p class="small muted">${isIOS() ? 'iPhone: tap <b>Add All</b> on the screen that opens.' : 'Android: open the downloaded file with your Calendar app, or use the Google Calendar button.'}</p>
     </div>
     <div class="card">
       <h2 style="font-size:1.05em">🔒 PIN lock</h2>
@@ -771,6 +933,48 @@ function renderSettings() {
       <p class="small muted">${totalEntryCount()} entries saved.</p>
       <button class="btn ghost block" data-act="eraseall" style="color:var(--danger)">Erase all my data</button>
     </div>`;
+}
+/* ---------- Daily reminder (calendar event, no server needed) ---------- */
+function reminderStart() {
+  const [h, m] = (S.settings.reminderTime || '20:00').split(':').map(Number);
+  const d = new Date(); d.setHours(h, m, 0, 0);
+  const fmt = x => `${x.getFullYear()}${pad(x.getMonth() + 1)}${pad(x.getDate())}T${pad(x.getHours())}${pad(x.getMinutes())}00`;
+  const end = new Date(d.getTime() + 5 * 60000);
+  return { start: fmt(d), end: fmt(end) };
+}
+const REMIND_TITLE = 'Log my symptoms (Vet Health Log)';
+function reminderICS() {
+  const { start } = reminderStart();
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
+  const url = appUrl();
+  return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Vet Health Log//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
+    'BEGIN:VEVENT', `UID:vhl-daily-reminder-${Date.now()}@vet-health-log`, `DTSTAMP:${stamp}`,
+    `DTSTART:${start}`, 'DURATION:PT5M', 'RRULE:FREQ=DAILY', `SUMMARY:${REMIND_TITLE}`,
+    `DESCRIPTION:Take a minute to rate today's symptoms.\\nOpen the app: ${url}`, `URL:${url}`,
+    'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${REMIND_TITLE}`, 'TRIGGER:PT0M', 'END:VALARM',
+    'END:VEVENT', 'END:VCALENDAR', ''].join('\r\n');
+}
+function addReminderICS() {
+  const blob = new Blob([reminderICS()], { type: 'text/calendar' });
+  const url = URL.createObjectURL(blob);
+  if (isIOS()) { window.location.href = url; }          // iPhone opens its "Add to Calendar" screen
+  else { const a = document.createElement('a'); a.href = url; a.download = 'daily-reminder.ics'; document.body.appendChild(a); a.click(); a.remove(); toast('Open the downloaded file to add it to your calendar'); }
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+function addReminderGoogle() {
+  const { start, end } = reminderStart();
+  const q = new URLSearchParams({ action: 'TEMPLATE', text: REMIND_TITLE, dates: `${start}/${end}`, recur: 'RRULE:FREQ=DAILY', details: `Take a minute to rate today's symptoms.\nOpen the app: ${appUrl()}` });
+  window.open(`https://calendar.google.com/calendar/render?${q}`, '_blank', 'noopener');
+}
+function savedChoicesCard() {
+  const groups = [];
+  if (S.custom.imp.length) groups.push(['Effect on work & daily life', 'imp', '', S.custom.imp]);
+  for (const cid in S.custom.sx) { const c = cond(cid); if (c && S.custom.sx[cid].length) groups.push([c.name, 'sx', cid, S.custom.sx[cid]]); }
+  if (!groups.length) return '';
+  return `<div class="card"><h2 style="font-size:1.05em">✏️ My saved write-ins</h2>
+    <p class="small muted">Things you wrote in with "Other". Removing one only hides the button — past entries keep it.</p>
+    ${groups.map(([title, kind, cid, list]) => `<div class="subhead">${esc(title)}</div>${list.map(v => `<div class="row-item"><div class="grow">${esc(v)}</div><button class="btn ghost small" data-act="delcustom" data-kind="${kind}" data-cid="${cid}" data-v="${esc(v)}">Remove</button></div>`).join('')}`).join('')}
+  </div>`;
 }
 function renderQR() {
   const el = $('#qr');
@@ -922,8 +1126,39 @@ function onClick(ev) {
     case 'prevday': curDate = addDays(curDate, -1); render(); break;
     case 'nextday': if (curDate < todayStr()) { curDate = addDays(curDate, 1); render(); } break;
     case 'toggle': expanded.has(cid) ? expanded.delete(cid) : expanded.add(cid); rerenderCard(cid); break;
-    case 'nosx': { const e = ensureEntry(curDate, cid); e.sev = 0; save(); rerenderCard(cid); toast('Logged: no symptoms'); break; }
-    case 'clearentry': if (confirm(`Clear the ${cond(cid).name} entry for ${fmtLong(curDate)}?`)) { if (S.entries[curDate]) { delete S.entries[curDate][cid]; if (!Object.keys(S.entries[curDate]).length) delete S.entries[curDate]; } save(); rerenderCard(cid); } break;
+    case 'nosx': setSeverity(cid, 0); save(); rerenderCard(cid); toast('Logged: no symptoms'); break;
+    case 'keepchange': delete pendingChange[cid]; rerenderCard(cid); break;
+    case 'fixmistake': fixMistake(cid); save(); rerenderCard(cid); toast('Fixed — kept as one rating'); break;
+    case 'sameyest': {
+      const y = getEntry(addDays(curDate, -1), cid); if (!y) break;
+      const copy = JSON.parse(JSON.stringify(y));
+      delete copy.notes; delete copy.log; copy.c = todayStr();
+      S.entries[curDate] = S.entries[curDate] || {}; S.entries[curDate][cid] = copy;
+      if (curDate === todayStr() && copy.sev != null) copy.log = [{ t: nowHM(), v: copy.sev }];
+      save(); expanded.add(cid); rerenderCard(cid); toast("Copied yesterday — change anything that's different");
+      break;
+    }
+    case 'med': {
+      const e = ensureEntry(curDate, cid); const n = t.dataset.v;
+      e.meds = e.meds || [];
+      const i = e.meds.findIndex(m => m.n === n);
+      i >= 0 ? e.meds.splice(i, 1) : e.meds.push({ n });
+      if (!e.meds.length) delete e.meds;
+      pruneEntry(curDate, cid); save(); rerenderCard(cid); break;
+    }
+    case 'medhelp': {
+      const e = getEntry(curDate, cid); const m = e && e.meds && e.meds[Number(t.dataset.i)]; if (!m) break;
+      m.h = m.h === t.dataset.v ? undefined : t.dataset.v; if (!m.h) delete m.h;
+      save(); $$('[data-act="medhelp"]', t.parentElement).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.v === m.h))); break;
+    }
+    case 'other': { // swap the "+ Other" chip for a small text box
+      const kind = t.dataset.kind;
+      const ph = kind === 'med' ? 'Name and dose, e.g. Ibuprofen 800mg' : kind === 'imp' ? 'e.g. Could not play with kids' : 'Type what you noticed';
+      t.outerHTML = `<span class="adder"><input type="text" data-kind="${kind}" placeholder="${ph}" enterkeyhint="done"><button class="btn small" data-act="otheradd" data-kind="${kind}">Add</button></span>`;
+      $('.adder input', card).focus(); break;
+    }
+    case 'otheradd': addOther(card, t.dataset.kind, $('.adder input', card)); break;
+    case 'clearentry': delete pendingChange[cid]; if (confirm(`Clear the ${cond(cid).name} entry for ${fmtLong(curDate)}?`)) { if (S.entries[curDate]) { delete S.entries[curDate][cid]; if (!Object.keys(S.entries[curDate]).length) delete S.entries[curDate]; } save(); rerenderCard(cid); } break;
     case 'step': {
       const e = ensureEntry(curDate, cid);
       const f = t.dataset.f, d = Number(t.dataset.d), max = Number(t.dataset.max);
@@ -946,13 +1181,37 @@ function onClick(ev) {
     case 'addcond': {
       const inp = $('#s-newcond'); const n = (inp.value || '').trim();
       if (!n) { toast('Type a condition name first'); return; }
-      S.conditions.push({ id: uid(), name: n, icon: '📝', on: true, custom: true }); save(); render(); toast(`Added ${n}`); break;
+      const ic = guessIcon(n);
+      S.conditions.push({ id: uid(), name: n, icon: ic, on: true, custom: true }); save(); render(); toast(`Added ${ic} ${n} — tap the icon to change it`); break;
     }
     case 'delcond': {
       const c = cond(cid); const n = entriesFor(cid).length;
       if (!confirm(`Remove "${c.name}"${n ? ` and its ${n} entries` : ''}? This cannot be undone.`)) return;
       S.conditions = S.conditions.filter(x => x.id !== cid);
       for (const d in S.entries) { delete S.entries[d][cid]; if (!Object.keys(S.entries[d]).length) delete S.entries[d]; }
+      save(); render(); break;
+    }
+    case 'remind-ics': { const v = $('#s-remtime')?.value; if (v) { S.settings.reminderTime = v; save(); } addReminderICS(); break; }
+    case 'remind-google': { const v = $('#s-remtime')?.value; if (v) { S.settings.reminderTime = v; save(); } addReminderGoogle(); break; }
+    case 'pickicon': iconPickFor = iconPickFor === cid ? null : cid; render(); scrollToCond(cid); break;
+    case 'seticon': cond(cid).icon = t.dataset.v; iconPickFor = null; save(); render(); scrollToCond(cid); break;
+    case 'moveup': case 'movedown': {
+      const i = S.conditions.findIndex(c => c.id === cid); const j = act === 'moveup' ? i - 1 : i + 1;
+      if (i < 0 || j < 0 || j >= S.conditions.length) break;
+      [S.conditions[i], S.conditions[j]] = [S.conditions[j], S.conditions[i]]; save(); render(); scrollToCond(cid);
+      break;
+    }
+    case 'addmed': {
+      const inp = $('#s-newmed'); const n = (inp.value || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+      if (!n) { toast('Type a medication name first'); return; }
+      if (!S.meds.some(m => m.toLowerCase() === n.toLowerCase())) S.meds.push(n);
+      save(); render(); toast(`Added ${n}`); break;
+    }
+    case 'delmed': S.meds = S.meds.filter(m => m !== t.dataset.v); save(); render(); break;
+    case 'delcustom': {
+      const v = t.dataset.v;
+      if (t.dataset.kind === 'imp') S.custom.imp = S.custom.imp.filter(x => x !== v);
+      else { const c = t.dataset.cid; S.custom.sx[c] = (S.custom.sx[c] || []).filter(x => x !== v); if (!S.custom.sx[c].length) delete S.custom.sx[c]; }
       save(); render(); break;
     }
     case 'theme': S.settings.theme = t.dataset.v; save(); applyPrefs(); $$('[data-act="theme"]').forEach(b => b.setAttribute('aria-pressed', String(b === t))); break;
@@ -966,17 +1225,43 @@ function onClick(ev) {
       localStorage.removeItem(STORE_KEY); S = freshState(); tab = 'today'; render(); toast('All data erased'); break;
   }
 }
+/* Save a write-in for future use and tick it on today's entry */
+function addOther(card, kind, inp) {
+  if (!card || !inp) return;
+  const v = (inp.value || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+  if (!v) { inp.focus(); return; }
+  const cid = card.dataset.cid; const e = ensureEntry(curDate, cid);
+  const has = (list, x) => list.some(y => y.toLowerCase() === x.toLowerCase());
+  if (kind === 'med') {
+    if (!has(S.meds, v)) S.meds.push(v);
+    const name = S.meds.find(y => y.toLowerCase() === v.toLowerCase());
+    e.meds = e.meds || []; if (!e.meds.some(m => m.n === name)) e.meds.push({ n: name });
+  } else if (kind === 'imp') {
+    const all = IMPACTS.concat(S.custom.imp);
+    if (!has(all, v)) S.custom.imp.push(v);
+    const name = IMPACTS.concat(S.custom.imp).find(y => y.toLowerCase() === v.toLowerCase());
+    e.imp = e.imp || []; if (!e.imp.includes(name)) e.imp.push(name);
+  } else {
+    const list = S.custom.sx[cid] = S.custom.sx[cid] || [];
+    if (!has(list, v)) list.push(v);
+    const name = list.find(y => y.toLowerCase() === v.toLowerCase());
+    e.x = e.x || {}; e.x.other = e.x.other || []; if (!e.x.other.includes(name)) e.x.other.push(name);
+  }
+  save(); rerenderCard(cid); toast(`Saved "${v}" for next time`);
+}
+function scrollToCond(cid) { const el = $(`[data-act="pickicon"][data-cid="${cid}"]`); if (el) el.scrollIntoView({ block: 'center' }); }
 function ensureEntryIfExists(date, cid) { return getEntry(date, cid) || {}; }
 function updateCardStatus(cid) {
   const el = $(`.card[data-cid="${cid}"] .status`); if (!el) return;
   const e = getEntry(curDate, cid);
-  const sev = e && e.sev != null ? e.sev : null;
-  const hasDetail = e && Object.keys(e).some(k => k !== 'c' && k !== 'sev');
+  const sev = latestSev(e);
+  const hasDetail = e && Object.keys(e).some(k => k !== 'c' && k !== 'sev' && k !== 'log');
   el.className = 'status' + (sev != null ? ' ok' : hasDetail ? ' part' : '');
   el.textContent = sev != null ? '✓ Logged' : hasDetail ? 'Rate severity' : 'Not logged';
 }
 function onInput(ev) {
   const t = ev.target;
+  if (t.id === 's-newcond') { const p = $('#newcond-icon'); if (p) p.textContent = guessIcon(t.value); return; }
   if (t.matches('input.sev')) {
     const v = Number(t.value);
     t.classList.remove('unset');
@@ -988,9 +1273,10 @@ function onChange(ev) {
   const t = ev.target;
   const card = t.closest('.card[data-cid]');
   if (t.matches('input.sev') && card) {
-    const cid = card.dataset.cid; const e = ensureEntry(curDate, cid);
-    e.sev = Number(t.value); save(); rerenderCard(cid); return;
+    const cid = card.dataset.cid;
+    setSeverity(cid, Number(t.value)); save(); rerenderCard(cid); return;
   }
+  if (t.closest('.adder')) return; // write-in box: saved by its Add button / Enter key
   if (t.id === 'datepick') { if (t.value) { curDate = t.value > todayStr() ? todayStr() : t.value; render(); } return; }
   if (card && t.dataset.f) {
     const cid = card.dataset.cid; const e = ensureEntry(curDate, cid);
@@ -1001,6 +1287,8 @@ function onChange(ev) {
   }
   if (t.id === 's-name') { S.profile.name = t.value.trim(); save(); toast('Saved'); return; }
   if (t.dataset.act === 'togglecond') { cond(t.dataset.cid).on = t.checked; save(); return; }
+  if (t.id === 's-remtime') { if (t.value) { S.settings.reminderTime = t.value; save(); } return; }
+  if (t.dataset.act === 'compact') { S.settings.compact = t.checked; save(); applyPrefs(); return; }
   if (t.dataset.act === 'bigtext') { S.settings.bigText = t.checked; save(); applyPrefs(); return; }
   if (t.id === 'restore' && t.files[0]) { doRestore(t.files[0]); t.value = ''; return; }
   if (t.id === 'r-notes') { rep.notes = t.checked; return; }
@@ -1012,6 +1300,10 @@ function onChange(ev) {
 document.addEventListener('click', onClick);
 document.addEventListener('input', onInput);
 document.addEventListener('change', onChange);
+document.addEventListener('keydown', ev => {
+  const inp = ev.target.closest && ev.target.closest('.adder input');
+  if (inp && ev.key === 'Enter') { ev.preventDefault(); addOther(inp.closest('.card[data-cid]'), inp.dataset.kind, inp); }
+});
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredInstall = e; if (unlocked) render(); });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { hiddenAt = Date.now(); return; }
