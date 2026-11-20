@@ -3,7 +3,7 @@
 'use strict';
 
 const APP_NAME = 'Vet Health Log';
-const APP_VERSION = '1.3.1';
+const APP_VERSION = '1.3.2';
 /* Where feedback goes. Leave both blank to hide the feedback card.
    FEEDBACK_FORM: link to a Google Form (anonymous — set the form to NOT collect email addresses). Preferred.
    FEEDBACK_EMAIL: used only if there is no form. Email is NOT anonymous: the sender's address is visible. */
@@ -429,6 +429,50 @@ function splitMed(str) {
   m = s.match(new RegExp('^(.*?[a-z)])\\s*-?\\s*(\\d[\\d.,/]*\\s*' + MED_UNIT + '.*)$', 'i')); // glued: Ibuprofen800mg
   if (m && cleanN(m[1])) return [cleanN(m[1]), cleanD(m[2])];
   return [s, ''];
+}
+/* Several medications typed in one box: "Ibuprofen 1000mg, Tylenol 1000mg" -> two.
+   Splits on , ; + & "and" (not the comma in "1,000mg"). Only counts as several when each extra one
+   has an amount or is already on your list, so "Ibuprofen 1 tab, twice" stays one. Returns null if it's just one. */
+function multiMeds(str) {
+  const toks = String(str || '').split(/\s*(?:,(?!\d{3})|;|\+|&|\band\b)\s*/i).map(x => x.trim()).filter(Boolean);
+  const out = [];
+  for (const t of toks) {
+    if (/^\(?[\d.½¼¾]/.test(t)) { // amount on its own: belongs to the medication before it
+      const last = out[out.length - 1]; if (!last) return null;
+      last.d = last.d ? last.d + ', ' + t : t.replace(/^\(|\)$/g, '');
+    } else { const [n, d] = splitMed(t); out.push({ n, d }); }
+  }
+  if (out.length < 2) return null;
+  const known = n => S.meds.some(x => x.toLowerCase() === n.toLowerCase());
+  return out.slice(1).every(x => x.d || known(x.n)) ? out : null;
+}
+/* One-time clean-up: entries and saved amounts that hold two medications */
+function fixMultiMeds() {
+  if (S.settings.medFix3) return;
+  for (const day in S.entries) for (const cid in S.entries[day]) {
+    const e = S.entries[day][cid]; if (!e.meds) continue;
+    const out = [];
+    for (const m of e.meds) {
+      const items = multiMeds(m.n + (m.d ? ' ' + m.d : ''));
+      if (!items) { out.push(m); continue; }
+      for (const it of items) {
+        const n = medName(it.n), x = { n };
+        if (it.d) x.d = addDose(n, it.d);
+        if (m.h) x.h = m.h;
+        if (!out.some(y => y.n === n)) out.push(x);
+      }
+    }
+    e.meds = out;
+  }
+  for (const n of Object.keys(S.medDoses)) {
+    for (const d of S.medDoses[n].slice()) {
+      const items = multiMeds(n + ' ' + d); if (!items) continue;
+      S.medDoses[n] = S.medDoses[n].filter(x => x !== d);
+      for (const it of items) { const nn = medName(it.n); if (it.d) addDose(nn, it.d); }
+    }
+    if (S.medDoses[n] && !S.medDoses[n].length) delete S.medDoses[n];
+  }
+  S.settings.medFix3 = true; save();
 }
 /* Rename a medication everywhere (list, amounts, prescribed, details, past entries). Merges into an existing one with the same name.
    If the old name had an amount stuck on it ("Ibuprofen - 800mg" -> "Ibuprofen"), that amount moves to the amount field. */
@@ -1695,6 +1739,12 @@ function onClick(ev) {
       const raw = ($('#s-newmed').value || '').trim().replace(/\s+/g, ' ').slice(0, 60);
       const amt = ($('#s-newdose').value || '').trim().replace(/\s+/g, ' ').slice(0, 30);
       if (!raw) { toast('Type a medication name first'); return; }
+      const multi = !amt && multiMeds(raw);
+      if (multi) {
+        const rx = $('#s-newrx').checked;
+        for (const it of multi) { const nm = medName(it.n); if (it.d) addDose(nm, it.d); if (rx) S.medRx[nm] = true; }
+        save(); render(); toast(`Added ${multi.length} medications`); break;
+      }
       let [n, d] = splitMed(raw); if (amt) d = amt;
       const name = medName(n); if (d) d = addDose(name, d);
       if ($('#s-newrx').checked) S.medRx[name] = true;
@@ -1769,6 +1819,19 @@ function addOther(card, kind, inp) {
   if (!v) { inp.focus(); return; }
   const cid = card.dataset.cid; const e = ensureEntry(curDate, cid);
   const has = (list, x) => list.some(y => y.toLowerCase() === x.toLowerCase());
+  if (kind === 'med') {
+    const multi = multiMeds(v);
+    if (multi) {
+      e.meds = e.meds || [];
+      const names = [];
+      for (const it of multi) {
+        const name = medName(it.n), d = it.d ? addDose(name, it.d) : '';
+        let m = e.meds.find(x => x.n === name); if (!m) e.meds.push(m = { n: name });
+        if (d) m.d = d; names.push(medLabel({ n: name, d }));
+      }
+      save(); rerenderCard(cid); toast(`Saved ${names.join(' and ')} as separate medications`); return;
+    }
+  }
   if (kind === 'med' || kind === 'dose') {
     let name, d;
     if (kind === 'dose') { name = inp.dataset.med; d = v.slice(0, 30); }
@@ -1873,6 +1936,7 @@ document.addEventListener('visibilitychange', () => {
 let lastSeenToday = todayStr();
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 fixMedNames();
+fixMultiMeds();
 initUpdates();
 applyPrefs(); // so the PIN screen uses the chosen colors too
 if (!lockIfNeeded()) render();

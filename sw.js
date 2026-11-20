@@ -2,12 +2,9 @@
    The app always runs from the copy saved on the phone. A new version downloads quietly in the
    background and waits until the user taps "Update now" (the page sends 'skipWaiting').
    When you change any app file: bump VERSION and update NOTES (shown in the "Update available" box). */
-const VERSION = 'vhl-1.3.1';
+const VERSION = 'vhl-1.3.2';
 const NOTES = [
-  'Meds tab is shorter: tap a medication to open it',
-  'Fix a saved amount (it also fixes past entries)',
-  'Rename a medication in Edit details',
-  'Names saved with the amount in them (like "Naproxen - 500mg") are split into name and amount',
+  'Two medications typed in one box (like "Ibuprofen 1000mg, Tylenol 1000mg") are split into separate medications, in past entries too',
 ];
 const FILES = ['./', 'index.html', 'app.js', 'manifest.webmanifest', 'jspdf.umd.min.js', 'qrcode.min.js', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
