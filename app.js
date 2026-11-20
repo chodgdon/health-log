@@ -3,7 +3,7 @@
 'use strict';
 
 const APP_NAME = 'Vet Health Log';
-const APP_VERSION = '1.3.3';
+const APP_VERSION = '1.3.4';
 /* Where feedback goes. Leave both blank to hide the feedback card.
    FEEDBACK_FORM: link to a Google Form (anonymous — set the form to NOT collect email addresses). Preferred.
    FEEDBACK_EMAIL: used only if there is no form. Email is NOT anonymous: the sender's address is visible. */
@@ -143,6 +143,33 @@ const TEMPLATE_RULES = [
 function guessTemplate(name) { for (const [re, t] of TEMPLATE_RULES) if (re.test(name || '')) return t; return ''; }
 function tplOf(cOrId) { const c = typeof cOrId === 'string' ? cond(cOrId) : cOrId; if (!c) return ''; return c.tpl != null ? c.tpl : (FIELDS[c.id] ? c.id : ''); }
 function fieldsFor(cid) { return FIELDS[tplOf(cid)] || []; }
+/* Choices a person removed from a condition's "About this condition" questions. Key: 'field:option' or 'field' (a yes/no question). */
+const choiceEdit = new Set(); // condition ids showing the ✕ / + editor
+function isHidden(c, key) { return !!(c && c.hide && c.hide.includes(key)); }
+function toggleHide(c, key) {
+  const h = new Set(c.hide || []); h.has(key) ? h.delete(key) : h.add(key);
+  if (h.size) c.hide = [...h]; else delete c.hide;
+}
+/* Sensible starting choices: a part tracked separately (e.g. Neck from Back) drops its parent's unrelated areas,
+   and the parent drops the part that now has its own card. */
+const PART_HIDE = [[/\b(neck|cervical)\b/i, 'back', ['Middle back', 'Lower back', 'Tailbone']],
+                   [/\b(lower back|lumbar|tailbone|coccyx)\b/i, 'back', ['Neck']]];
+function defaultHides(c) {
+  for (const [re, tpl, opts] of PART_HIDE) if (tplOf(c) === tpl && re.test(c.name) && !(c.id in FIELDS)) for (const o of opts) if (!isHidden(c, 'where:' + o)) toggleHide(c, 'where:' + o);
+}
+function hideSplitPart(parent, part) {
+  const f = fieldsFor(parent.id).find(f => f.k === 'where');
+  const o = f && f.opts.find(o => o.toLowerCase() === part.name.trim().toLowerCase());
+  if (o && !isHidden(parent, 'where:' + o)) toggleHide(parent, 'where:' + o);
+}
+function fixChoices() { // one time, for conditions added before this feature
+  if (S.settings.choiceFix1) return;
+  for (const c of S.conditions) {
+    defaultHides(c);
+    for (const p of S.conditions) if (p !== c && tplOf(p) === tplOf(c) && p.custom) hideSplitPart(c, p);
+  }
+  S.settings.choiceFix1 = true; save();
+}
 const VISIT = 'Doctor / ER / VA visit';
 const IMPACTS = ['Missed work', 'Left work early', 'Could not do chores', 'Could not drive', 'Cancelled plans', 'Needed help from someone', 'Doctor / ER / VA visit'];
 const MED_HELP = ['Yes', 'A little', 'No'];
@@ -618,7 +645,8 @@ function crisisLine(e) {
 }
 function renderDetails(c, e) {
   const x = e.x || {};
-  const specific = fieldsFor(c.id).map(f => renderField(f, x, 'x.')).join('');
+  const editing = choiceEdit.has(c.id);
+  const specific = fieldsFor(c.id).map(f => renderField(f, x, 'x.', c, editing)).join('');
   const mine = S.custom.sx[c.id] || [];
   const otherRow = `<div class="field"><div class="lbl">${mine.length ? 'Your own items' : 'Something not listed?'}</div><div class="chips">
       ${mine.map(o => `<button class="chip check" data-f="x.other" data-multi="${esc(o)}" aria-pressed="${(x.other || []).includes(o)}">${esc(o)}</button>`).join('')}
@@ -627,7 +655,11 @@ function renderDetails(c, e) {
   const meds = medOptions(c.id, e);
   const taken = e.meds || [];
   return `
-    <div class="subhead">About this condition</div>${specific}${otherRow}
+    ${fieldsFor(c.id).length ? `<div class="subhead-row"><div class="subhead">About this condition</div>
+      <button class="btn ghost small" data-act="editchoices" data-cid="${c.id}">${editing ? 'Done' : '✎ Edit choices'}</button></div>` : '<div class="subhead">About this condition</div>'}
+    ${editing ? `<div class="banner info" style="margin:8px 0 0"><b>Edit the choices for ${esc(c.name)}</b>
+      <p class="small" style="margin:4px 0 0">Tap <b>✕</b> to remove a choice that doesn't apply. Tap <b>+</b> to bring it back. Past entries don't change.</p></div>` : ''}
+    ${specific}${editing ? `<div class="row"><button class="btn small" data-act="editchoices" data-cid="${c.id}">Done</button></div>` : otherRow}
     <div class="subhead">Flare-ups</div>
     ${yesNo('flare', 'Did you have a flare-up (worse than usual)?', e.flare)}
     ${yesNo('lay', isHead ? 'Did you have to stop everything and lie down? (prostrating attack)' : 'Did you have to stop and lie down or rest?', e.lay)}
@@ -687,8 +719,17 @@ function numField(f, val, prefix) {
     <input type="number" inputmode="decimal" min="0" max="${f.max}" step="${step}" data-f="${prefix}${f.k}" data-num="1" value="${val ?? ''}" aria-label="${esc(f.l)}">
     <button data-act="step" data-f="${prefix}${f.k}" data-d="${step}" data-max="${f.max}" aria-label="More">+</button></div></div>`;
 }
-function renderField(f, x, prefix) {
+function renderField(f, x, prefix, c, editing) {
   const v = x[f.k];
+  const ed = (key, label) => `<button class="chip edit${isHidden(c, key) ? ' off' : ''}" data-act="hidechoice" data-cid="${c.id}" data-v="${esc(key)}" aria-label="${isHidden(c, key) ? 'Bring back' : 'Remove'} ${esc(label)}">${isHidden(c, key) ? '+' : '✕'} ${esc(label)}</button>`;
+  if (editing && f.t === 'check') return `<div class="field" style="margin-top:8px">${ed(f.k, f.l)}</div>`;
+  if (editing && (f.t === 'choice' || f.t === 'multi')) return `<div class="field"><div class="lbl">${esc(f.l)}</div><div class="chips">${f.opts.map(o => ed(f.k + ':' + o, o)).join('')}</div></div>`;
+  if (c && f.t === 'check' && isHidden(c, f.k) && !v) return '';
+  if (c && (f.t === 'choice' || f.t === 'multi')) { // leave out removed choices, unless picked on this day
+    const opts = f.opts.filter(o => !isHidden(c, f.k + ':' + o) || (f.t === 'multi' ? (v || []).includes(o) : v === o));
+    if (!opts.length) return '';
+    f = Object.assign({}, f, { opts });
+  }
   if (f.t === 'check') return `<div class="field" style="margin-top:8px"><button class="chip check" data-f="${prefix}${f.k}" data-toggle="1" aria-pressed="${!!v}">${esc(f.l)}</button></div>`;
   if (f.t === 'num') return numField(f, v, prefix);
   if (f.t === 'choice') return `<div class="field"><div class="lbl">${esc(f.l)}</div><div class="chips">${f.opts.map(o => `<button class="chip" data-f="${prefix}${f.k}" data-choice="${esc(o)}" aria-pressed="${v === o}">${esc(o)}</button>`).join('')}</div></div>`;
@@ -1793,9 +1834,12 @@ function onClick(ev) {
       const base = cond(cid); const n = ($(`#split-${cid}`).value || '').trim().replace(/\s+/g, ' ').slice(0, 50);
       if (!n) { toast('Type a name, e.g. Neck'); return; }
       const nc = newCondition(n, base);
+      defaultHides(nc); hideSplitPart(base, nc);
       S.conditions.splice(S.conditions.indexOf(base) + 1, 0, nc); iconPickFor = null; save(); render(); scrollToCond(nc.id);
       toast(`Added ${nc.icon} ${n} — it has its own card and history`); break;
     }
+    case 'editchoices': choiceEdit.has(cid) ? choiceEdit.delete(cid) : choiceEdit.add(cid); rerenderCard(cid); break;
+    case 'hidechoice': toggleHide(cond(cid), t.dataset.v); save(); rerenderCard(cid); break;
     case 'settpl': cond(cid).tpl = t.dataset.v; save(); render(); scrollToCond(cid); break;
     case 'moveup': case 'movedown': {
       const i = S.conditions.findIndex(c => c.id === cid); const j = act === 'moveup' ? i - 1 : i + 1;
@@ -2024,6 +2068,7 @@ if (S.settings.lastVersion !== APP_VERSION) {
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 fixMedNames();
 fixMultiMeds();
+fixChoices();
 initUpdates();
 applyPrefs(); // so the PIN screen uses the chosen colors too
 if (!lockIfNeeded()) render();
