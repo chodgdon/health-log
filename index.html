@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Privacy lock: the browser blocks this app from loading from or sending data to ANY other server.
+     connect-src 'self' = the app can only talk to its own web address (to fetch its own files). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'; manifest-src 'self'; worker-src 'self'">
+<meta name="referrer" content="no-referrer">
 <title>Vet Health Log</title>
 <meta name="description" content="Private daily symptom log for VA disability claims. Your data stays on your phone.">
 <meta name="theme-color" content="#142850">
@@ -158,9 +162,39 @@ html.compact .progress{ margin-bottom:8px; font-size:.82em; }
 .icongrid button{ height:44px; border-radius:10px; border:2px solid transparent; background:var(--surface); font-size:1.35em; padding:0; }
 .icongrid button[aria-pressed="true"]{ border-color:var(--accent); }
 .iconprev{ font-size:1.6em; width:44px; text-align:center; flex:none; }
+.namebtn{ background:none; border:0; text-align:left; padding:8px 0; color:var(--text); font:inherit; min-height:44px; }
+.privacy li{ margin-bottom:6px; }
 .chip.add{ border-style:dashed; color:var(--accent); }
 .adder{ display:flex; gap:8px; width:100%; }
 .adder input{ flex:1; min-width:0; }
+.medrow{ display:flex; align-items:center; gap:8px; margin-top:8px; }
+.medrow .medname{ flex:1; min-width:0; border-radius:12px; overflow-wrap:anywhere; }
+.medrow select.dose{ flex:0 0 auto; width:auto; max-width:46%; min-height:44px; padding:8px 10px; }
+.medrow:not(.on) select.dose{ color:var(--muted); }
+.medrow .dose-adder{ flex:0 0 50%; width:auto; }
+.medhelp{ display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin:6px 0 4px 10px; }
+.medhelp .chip, .chip.mini{ min-height:36px; padding:4px 12px; font-size:.86em; }
+.rx-tag{ display:inline-block; font-size:.72em; font-weight:800; padding:1px 6px; border-radius:6px; background:var(--surface2); color:var(--accent); vertical-align:1px; }
+.chip[aria-pressed="true"] .rx-tag{ background:rgba(255,255,255,.25); color:inherit; }
+label.rx{ display:flex; align-items:center; gap:8px; font-size:.9em; margin-top:4px; min-height:36px; }
+label.rx input{ width:22px; height:22px; accent-color:var(--accent); }
+input[type=range].sev{ touch-action:pan-y; }
+input[type=range].sev.locked{ opacity:.55; pointer-events:none; }
+.sev-row[data-act="sevedit"]{ cursor:pointer; }
+.sev-hint{ color:var(--accent); font-weight:600; align-self:center; }
+/* Meds tab */
+.medhead{ display:flex; align-items:center; gap:8px; }
+.medhead .micon{ font-size:1.4em; }
+.medhead h2{ font-size:1.1em; margin:0; flex:1; min-width:0; overflow-wrap:anywhere; }
+.daily{ display:inline-block; font-size:.78em; font-weight:700; padding:4px 9px; border-radius:99px; background:var(--ok-soft); color:var(--ok); white-space:nowrap; }
+.kv{ display:flex; gap:8px; font-size:.92em; margin-top:6px; }
+.kv > b{ flex:0 0 92px; color:var(--muted); font-weight:600; }
+.strip{ display:grid; grid-template-columns:repeat(30,1fr); gap:2px; margin-top:10px; }
+.strip i{ height:18px; border-radius:3px; background:var(--surface2); }
+.strip i.on{ background:var(--accent); }
+.strip i.on.daily{ background:#0e7c74; }
+.strip-lbl{ display:flex; justify-content:space-between; font-size:.72em; color:var(--muted); margin-top:2px; }
+.helpbar{ display:flex; height:10px; border-radius:99px; overflow:hidden; margin-top:10px; gap:2px; }
 .change-note{ margin-top:10px; background:var(--warn-soft); border:1px solid var(--line); border-radius:12px; padding:10px 12px; font-size:.92em; }
 .change-note .row{ display:flex; gap:8px; margin-top:8px; }
 .change-note .row .btn{ flex:1; }

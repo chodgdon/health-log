@@ -3,7 +3,12 @@
 'use strict';
 
 const APP_NAME = 'Vet Health Log';
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
+/* Where feedback goes. Leave both blank to hide the feedback card.
+   FEEDBACK_FORM: link to a Google Form (anonymous — set the form to NOT collect email addresses). Preferred.
+   FEEDBACK_EMAIL: used only if there is no form. Email is NOT anonymous: the sender's address is visible. */
+const FEEDBACK_FORM = '';
+const FEEDBACK_EMAIL = '';
 const STORE_KEY = 'vhl-data-v1';
 const RELOCK_MS = 3 * 60 * 1000;
 
@@ -122,6 +127,22 @@ const ICON_RULES = [
 ];
 const ICON_CHOICES = ['🦴', '🦵', '🦶', '💪', '✋', '🤕', '🧠', '👁️', '👂', '🦷', '🫁', '❤️', '🩸', '🤢', '🩹', '⚡', '🤧', '😴', '🥱', '♂️', '♀️', '💧', '🎗️', '🌡️', '🔥', '🩺', '💊', '🚶', '🧍', '📝'];
 function guessIcon(name) { for (const [re, ic] of ICON_RULES) if (re.test(name || '')) return ic; return '📝'; }
+/* Question sets. A condition uses its own (built-in) or one borrowed via c.tpl (added/split conditions). */
+const TEMPLATES = [['back', 'Back / spine / neck'], ['joints', 'Joints (shoulder, hip, elbow, hand)'], ['knees', 'Knee'], ['feet', 'Feet / ankles'], ['head', 'Headaches'], ['gi', 'Stomach / GI'], ['mental', 'Mental health'], ['sleep', 'Sleep'], ['ears', 'Hearing / tinnitus'], ['', 'Basic questions only']];
+const TEMPLATE_RULES = [
+  [/\b(neck|spine|spinal|back|lumbar|cervical|thoracic|disc|disk|sciatica|tailbone|coccyx)\b/i, 'back'],
+  [/\b(shoulders?|hips?|elbows?|wrists?|hands?|fingers?|thumbs?|arms?|rotator|carpal|joints?|arthritis)\b/i, 'joints'],
+  [/\b(knees?|patella\w*|meniscus|acl)\b/i, 'knees'],
+  [/\b(foot|feet|ankles?|toes?|heels?|plantar|bunions?)\b/i, 'feet'],
+  [/\b(head|headaches?|migraines?)\b/i, 'head'],
+  [/\b(stomach|gerd|ibs|bowel|reflux|gi|gastr\w*|digest\w*|hernia|colon|crohn\w*)\b/i, 'gi'],
+  [/\b(ptsd|anxiety|depress\w*|mental|mood|bipolar|tbi|panic)\b/i, 'mental'],
+  [/\b(sleep|apnea|insomnia)\b/i, 'sleep'],
+  [/\b(ears?|hearing|tinnitus|vertigo)\b/i, 'ears'],
+];
+function guessTemplate(name) { for (const [re, t] of TEMPLATE_RULES) if (re.test(name || '')) return t; return ''; }
+function tplOf(cOrId) { const c = typeof cOrId === 'string' ? cond(cOrId) : cOrId; if (!c) return ''; return c.tpl != null ? c.tpl : (FIELDS[c.id] ? c.id : ''); }
+function fieldsFor(cid) { return FIELDS[tplOf(cid)] || []; }
 const IMPACTS = ['Missed work', 'Left work early', 'Could not do chores', 'Could not drive', 'Cancelled plans', 'Needed help from someone', 'Doctor / ER / VA visit'];
 const MED_HELP = ['Yes', 'A little', 'No'];
 const CRISIS_TEL = 'tel:988';
@@ -153,8 +174,11 @@ function freshState() {
     profile: { name: '' },
     conditions: CATALOG.map(c => ({ id: c.id, name: c.name, icon: c.icon, on: false, custom: false })),
     entries: {},
-    meds: [],                    // "My medications"
-    custom: { sx: {}, imp: [] }, // saved write-ins: symptoms per condition, daily-life effects
+    meds: [],                    // "My medications" (names only)
+    medDoses: {},                // usual amounts per medication name
+    medRx: {},                   // name -> true when prescribed
+    medInfo: {},                 // name -> {daily:{from}, past:[{from,to}], skip:[dates], for:[cid], since, se:[side effects]}
+    custom: { sx: {}, imp: [], se: [] }, // saved write-ins: symptoms per condition, daily-life effects, side effects
     settings: { onboarded: false, bigText: false, pinHash: null, pinSalt: null, lastBackup: null, backupSnooze: null, installDismissed: false, compact: true, reminderTime: '20:00' },
   };
 }
@@ -172,8 +196,11 @@ function load() {
     s.conditions = s.conditions || [];
     for (const c of base.conditions) if (!s.conditions.find(x => x.id === c.id)) s.conditions.push(c);
     for (const c of s.conditions) if (c.custom && (!c.icon || c.icon === '📝')) c.icon = guessIcon(c.name);
+    for (const c of s.conditions) if (c.custom && c.tpl == null) c.tpl = guessTemplate(c.name);
     s.meds = Array.isArray(s.meds) ? s.meds : [];
-    s.custom = Object.assign({ sx: {}, imp: [] }, s.custom || {});
+    s.custom = Object.assign({ sx: {}, imp: [], se: [] }, s.custom || {});
+    s.medRx = s.medRx || {};
+    s.medInfo = s.medInfo || {};
     // v1.0 stored one medication as text; convert to the list format
     for (const d in s.entries) for (const cid in s.entries[d]) {
       const e = s.entries[d][cid];
@@ -182,6 +209,24 @@ function load() {
         if (e.med && !s.meds.includes(e.med)) s.meds.push(e.med);
         delete e.med; delete e.medHelp;
       }
+    }
+    // v1.4: split "Ibuprofen 800mg" into the name and the amount
+    if (!s.medDoses) {
+      s.medDoses = {};
+      const listed = [], known = [];
+      const fix = (full, list) => {
+        const [n, d] = splitMed(full); if (!n) return [full, ''];
+        let name = known.find(x => x.toLowerCase() === n.toLowerCase());
+        if (!name) { name = n; known.push(n); }
+        if (list && !list.includes(name)) list.push(name);
+        if (d) { const l = s.medDoses[name] = s.medDoses[name] || []; if (!l.some(x => x.toLowerCase() === d.toLowerCase())) l.push(d); }
+        return [name, d];
+      };
+      for (const m of s.meds) fix(m, listed);
+      for (const d in s.entries) for (const cid in s.entries[d]) for (const m of s.entries[d][cid].meds || []) {
+        if (m.d != null) continue; const [n, dd] = fix(m.n); m.n = n; if (dd) m.d = dd;
+      }
+      s.meds = listed;
     }
     return s;
   } catch (e) { console.error(e); return freshState(); }
@@ -251,17 +296,18 @@ function render() {
   applyPrefs();
   const app = $('#app');
   if (!S.settings.onboarded) { app.innerHTML = renderWelcome(); return; }
-  const titles = { today: 'Daily Log', history: 'History', report: 'Reports & Export', settings: 'Settings' };
+  const titles = { today: 'Daily Log', history: 'History', meds: 'Medications', report: 'Reports & Export', settings: 'Settings' };
   app.innerHTML = `
     <header class="topbar">
       <h1>${esc(titles[tab])}</h1>
       <div class="sub">${esc(APP_NAME)} · private, stays on this phone</div>
       ${tab === 'today' ? dateNav() : ''}
     </header>
-    <main id="main">${tab === 'today' ? renderToday() : tab === 'history' ? renderHistory() : tab === 'report' ? renderReport() : renderSettings()}</main>
+    <main id="main">${tab === 'today' ? renderToday() : tab === 'history' ? renderHistory() : tab === 'meds' ? renderMeds() : tab === 'report' ? renderReport() : renderSettings()}</main>
     <nav class="tabs" aria-label="Main">
       ${tabBtn('today', '📝', 'Log')}
       ${tabBtn('history', '📈', 'History')}
+      ${tabBtn('meds', '💊', 'Meds')}
       ${tabBtn('report', '📄', 'Reports')}
       ${tabBtn('settings', '⚙️', 'Settings')}
     </nav>`;
@@ -289,6 +335,7 @@ function renderWelcome() {
       <p>A simple daily diary of your symptoms to back up your VA disability claim.</p>
       <p class="small" style="opacity:.85">Everything you enter stays on this phone. No account, no internet needed.</p>
     </div>
+    ${privacyCard(true)}
     ${installTip(true)}
     <div class="card">
       <div class="field"><label for="w-name">Your name (shown on your reports — optional)</label>
@@ -317,7 +364,7 @@ function renderToday() {
   const conds = activeConds();
   if (!conds.length) return `<div class="empty">No conditions turned on.<br><br><button class="btn" data-tab="settings">Choose conditions in Settings</button></div>`;
   const logged = conds.filter(c => { const e = getEntry(curDate, c.id); return e && e.sev != null; }).length;
-  return `${backupBanner()}${installTip(false)}
+  return `${updateBanner()}${backupBanner()}${installTip(false)}
     <div class="progress">${logged} of ${conds.length} rated for this day · slide the bar to rate 0 (none) to 10 (worst)</div>
     ${conds.map(renderCard).join('')}
     <p class="small muted" style="text-align:center">Changes save automatically.</p>`;
@@ -330,6 +377,13 @@ function minutesSince(hm) { if (!hm) return Infinity; const [h, m] = hm.split(':
 function latestSev(e) { return e && e.log && e.log.length ? e.log[e.log.length - 1].v : (e && e.sev != null ? e.sev : null); }
 function recalcSev(e) { if (e.log && e.log.length) e.sev = Math.max(...e.log.map(r => r.v)); if (e.log && e.log.length < 2 && !e.log[0]?.t) delete e.log; }
 function timelineText(e, arrow = ' → ') { return (e.log || []).map(r => `${r.v}${r.t ? ` at ${fmtHM(r.t)}` : ''}`).join(arrow); }
+const sevEdit = new Set(); // cards whose already-set slider was unlocked with "Change"
+let sevEditY = 0, lastScrollAt = 0;
+window.addEventListener('scroll', () => {
+  lastScrollAt = Date.now();
+  // scrolled away from an unlocked slider: lock it again
+  if (sevEdit.size && Math.abs(window.scrollY - sevEditY) > 120) { const ids = [...sevEdit]; sevEdit.clear(); ids.forEach(rerenderCard); }
+}, { passive: true });
 const pendingChange = {}; // cid -> {from, to, t} shown under the bar until dismissed
 
 function setSeverity(cid, v) {
@@ -359,13 +413,66 @@ function fixMistake(cid) {                 // the change was a correction, not a
   e.log.pop(); e.log[e.log.length - 1].v = p.to; recalcSev(e); delete pendingChange[cid];
 }
 
+/* "Ibuprofen 800mg" -> ['Ibuprofen', '800mg']: the amount starts at the first later word that begins with a number */
+function splitMed(str) {
+  const w = String(str || '').trim().replace(/\s+/g, ' ').split(' ');
+  const i = w.findIndex((x, k) => k > 0 && /^[\d.½¼¾]/.test(x));
+  return i > 0 ? [w.slice(0, i).join(' '), w.slice(i).join(' ')] : [w.join(' '), ''];
+}
+function medName(n) { // the saved spelling, adding it to My medications if new
+  const f = S.meds.find(x => x.toLowerCase() === n.toLowerCase()); if (f) return f;
+  n = n.charAt(0).toUpperCase() + n.slice(1); S.meds.push(n); return n;
+}
+function addDose(name, d) {
+  const l = S.medDoses[name] = S.medDoses[name] || [];
+  const f = l.find(x => x.toLowerCase() === d.toLowerCase()); if (f) return f;
+  l.push(d); return d;
+}
+/* Amounts for one medication, the most used first */
+function doseOptions(name) {
+  const count = {};
+  for (const d in S.entries) for (const cid in S.entries[d]) for (const m of S.entries[d][cid].meds || []) if (m.n === name && m.d) count[m.d] = (count[m.d] || 0) + 1;
+  return (S.medDoses[name] || []).slice().sort((a, b) => (count[b] || 0) - (count[a] || 0));
+}
+function medLabel(m, rx) { return m.n + (m.d ? ' ' + m.d : '') + (rx && S.medRx[m.n] ? ' [prescribed]' : ''); }
+function doseAdder(name) {
+  return `<span class="adder dose-adder"><input type="text" data-kind="dose" data-med="${esc(name)}" placeholder="e.g. 400mg" enterkeyhint="done" aria-label="Amount of ${esc(name)}"><button class="btn small" data-act="otheradd" data-kind="dose">OK</button></span>`;
+}
+function medRow(name, tk, i) {
+  const opts = doseOptions(name);
+  const cur = tk ? (tk.d || '') : (opts[0] || '');
+  if (cur && !opts.includes(cur)) opts.unshift(cur);
+  return `<div class="medrow${tk ? ' on' : ''}">
+      <button class="chip check medname" data-act="med" data-v="${esc(name)}" aria-pressed="${!!tk}">${esc(name)}${S.medRx[name] ? ' <span class="rx-tag" title="Prescribed">Rx</span>' : ''}${tk && tk.daily ? ' <span class="rx-tag" title="Counted every day">📅 daily</span>' : ''}${!tk && dailyActive(name, curDate) && !dailyTaken(name, curDate) ? ' <span class="rx-tag" title="Every-day medication marked skipped for this day">skipped</span>' : ''}</button>
+      <select class="dose" data-med="${esc(name)}" aria-label="Amount of ${esc(name)}">${cur ? '' : '<option value="" selected>Amount</option>'}${opts.map(o => `<option${o === cur ? ' selected' : ''}>${esc(o)}</option>`).join('')}<option value="__other">Other amount…</option></select>
+    </div>
+    ${tk && i >= 0 ? `<div class="medhelp"><span class="small muted">Helped?</span>${MED_HELP.map(o => `<button class="chip" data-act="medhelp" data-i="${i}" data-v="${o}" aria-pressed="${tk.h === o}">${o}</button>`).join('')}</div>` : ''}`;
+}
+/* Every-day medications: counted as taken each day (from a start date) unless that day is marked skipped */
+const SIDE_EFFECTS = ['Drowsiness', 'Upset stomach', 'Dizziness', 'Trouble sleeping', 'Headache', 'Dry mouth', 'Weight change', 'Mood changes'];
+function mi(n) { return S.medInfo[n] || {}; }
+function medInfo(n) { return S.medInfo[n] = S.medInfo[n] || {}; }
+function dailyActive(n, d) { const i = mi(n); return !!((i.daily && d >= i.daily.from) || (i.past || []).some(p => d >= p.from && d <= p.to)); }
+function dailyTaken(n, d) { return dailyActive(n, d) && !(mi(n).skip || []).includes(d); }
+function dailyFor(n, cid, d) { return dailyActive(n, d) && (mi(n).for || []).includes(cid); }
+function setSkip(n, d, on) { const i = medInfo(n); const l = (i.skip || []).filter(x => x !== d); if (on) l.push(d); if (l.length) i.skip = l; else delete i.skip; }
+/* Medications for one condition on one day: the ones logged plus every-day ones */
+function medsOn(cid, d, e) {
+  const out = ((e && e.meds) || []).slice();
+  for (const n of S.meds) if (!out.some(m => m.n === n) && dailyFor(n, cid, d) && dailyTaken(n, d)) {
+    const ds = (S.medDoses[n] || [])[0]; out.push(Object.assign({ n, daily: true }, ds ? { d: ds } : {}));
+  }
+  return out;
+}
+function takenOn(n, d) { return dailyTaken(n, d) || Object.values(S.entries[d] || {}).some(e => (e.meds || []).some(m => m.n === n)); }
 /* Medications: my list, with the ones used most for this condition first */
 function medOptions(cid, e) {
   const count = {};
   for (const d in S.entries) { const x = S.entries[d][cid]; if (x && x.meds) for (const m of x.meds) count[m.n] = (count[m.n] || 0) + 1; }
   const list = S.meds.slice();
   for (const m of (e.meds || [])) if (!list.includes(m.n)) list.push(m.n);
-  return list.sort((a, b) => (count[b] || 0) - (count[a] || 0));
+  const w = n => (count[n] || 0) + (dailyFor(n, cid, curDate) ? 1e6 : 0);
+  return list.sort((a, b) => w(b) - w(a));
 }
 function otherAdder(kind, label) {
   return `<button class="chip add" data-act="other" data-kind="${kind}">＋ ${label || 'Other (write in)'}</button>`;
@@ -379,10 +486,11 @@ function renderCard(c) {
   const open = expanded.has(c.id);
   const yest = !e && getEntry(addDays(curDate, -1), c.id);
   const p = pendingChange[c.id];
+  const locked = sev != null && !sevEdit.has(c.id);
   return `<section class="card" data-cid="${c.id}">
     <div class="card-head"><span class="cicon" aria-hidden="true">${c.icon || '📝'}</span><h2>${esc(c.name)}</h2>${status}</div>
-    <div class="sev-row">
-      <input type="range" class="sev ${sev == null ? 'unset' : ''}" min="0" max="10" step="1" value="${sev ?? 0}" aria-label="${esc(c.name)} severity, 0 to 10">
+    <div class="sev-row"${locked ? ` data-act="sevedit" title="Tap to change the rating"` : ''}>
+      <input type="range" class="sev ${sev == null ? 'unset' : ''}${locked ? ' locked' : ''}" min="0" max="10" step="1" value="${sev ?? 0}" aria-label="${esc(c.name)} severity, 0 to 10"${locked ? ' disabled' : ''}>
       <div class="sev-val"><b style="color:${sevColor(sev)}">${sev ?? '–'}</b><span>${sevWord(sev)}</span></div>
     </div>
     <div class="scale-labels"><span>0 None</span><span>5</span><span>10 Worst</span></div>
@@ -391,10 +499,10 @@ function renderCard(c) {
       : e && e.log && e.log.length > 1 ? `<div class="timeline small">Today: ${esc(timelineText(e))} · <b>worst ${e.sev}</b></div>` : ''}
     <div class="card-actions">
       ${yest ? `<button class="btn ghost small" data-act="sameyest">↻ Same as yesterday</button>` : ''}
-      ${sev == null ? `<button class="btn ghost small" data-act="nosx">No symptoms (0)</button>` : ''}
+      ${sev == null ? `<button class="btn ghost small" data-act="nosx">No symptoms (0)</button>` : locked ? `<button class="btn ghost small" data-act="sevedit">✎ Change rating</button>` : `<span class="small sev-hint">Slide to change</span>`}
       <button class="btn secondary small" data-act="toggle" aria-expanded="${open}">${open ? 'Hide details ▴' : 'More details ▾'}</button>
     </div>
-    ${c.id === 'mental' ? crisisLine(e) : ''}
+    ${tplOf(c) === 'mental' ? crisisLine(e) : ''}
     ${open ? `<div class="details">${renderDetails(c, e || {})}</div>` : ''}
   </section>`;
 }
@@ -408,12 +516,12 @@ function crisisLine(e) {
 }
 function renderDetails(c, e) {
   const x = e.x || {};
-  const specific = (FIELDS[c.id] || []).map(f => renderField(f, x, 'x.')).join('');
+  const specific = fieldsFor(c.id).map(f => renderField(f, x, 'x.')).join('');
   const mine = S.custom.sx[c.id] || [];
   const otherRow = `<div class="field"><div class="lbl">${mine.length ? 'Your own items' : 'Something not listed?'}</div><div class="chips">
       ${mine.map(o => `<button class="chip check" data-f="x.other" data-multi="${esc(o)}" aria-pressed="${(x.other || []).includes(o)}">${esc(o)}</button>`).join('')}
       ${otherAdder('sx')}</div></div>`;
-  const isHead = c.id === 'head';
+  const isHead = tplOf(c) === 'head';
   const meds = medOptions(c.id, e);
   const taken = e.meds || [];
   return `
@@ -428,13 +536,10 @@ function renderDetails(c, e) {
       ${otherAdder('imp')}
     </div></div>
     <div class="subhead">Medication</div>
-    <div class="field"><div class="lbl">What did you take? Tap all that apply.</div><div class="chips">
-      ${meds.map(m => `<button class="chip check" data-act="med" data-v="${esc(m)}" aria-pressed="${taken.some(t => t.n === m)}">${esc(m)}</button>`).join('')}
-      ${otherAdder('med', meds.length ? 'Other medication' : 'Add a medication')}
-    </div>${meds.length ? '' : '<p class="small muted">Tip: list the medications you use in Settings → My medications, then just tap them here.</p>'}</div>
-    ${taken.map((m, i) => `<div class="field"><div class="lbl">Did ${esc(m.n)} help?</div><div class="chips">
-      ${MED_HELP.map(o => `<button class="chip" data-act="medhelp" data-i="${i}" data-v="${o}" aria-pressed="${m.h === o}">${o}</button>`).join('')}
-    </div></div>`).join('')}
+    <div class="field">${meds.length ? '<div class="lbl">What did you take? Tap the name. Change the amount if it was different.</div>' : ''}
+      ${meds.map(m => { const tk = medsOn(c.id, curDate, e).find(t => t.n === m); return medRow(m, tk, tk ? taken.indexOf(tk) : -1); }).join('')}
+      <div class="chips" style="margin-top:8px">${otherAdder('med', meds.length ? 'Other medication' : 'Add a medication')}</div>
+      ${meds.length ? '' : '<p class="small muted">Tip: add the medications you use on the 💊 Meds tab, then just tap them here.</p>'}</div>
     <div class="subhead">Notes</div>
     <div class="field"><label for="notes-${c.id}">What happened? Triggers, what you couldn't do, appointments…</label>
       <textarea id="notes-${c.id}" data-f="notes">${esc(e.notes || '')}</textarea></div>
@@ -517,14 +622,14 @@ function renderHistory() {
         <div class="stat"><b>${st.avg == null ? '–' : st.avg.toFixed(1)}</b><span>average severity</span></div>
         <div class="stat"><b>${st.severe}</b><span>severe days (7+)</span></div>
         <div class="stat"><b>${st.flare}</b><span>flare-ups</span></div>
-        <div class="stat"><b>${st.lay}</b><span>${c.id === 'head' ? 'prostrating attacks' : 'times had to lie down'}</span></div>
+        <div class="stat"><b>${st.lay}</b><span>${tplOf(c) === 'head' ? 'prostrating attacks' : 'times had to lie down'}</span></div>
         <div class="stat"><b>${st.imp['Missed work'] || 0}</b><span>missed work days</span></div>
       </div>
     </div>
     <div class="card"><h2 style="font-size:1.05em;margin-bottom:6px">Entries</h2>
       ${list.length ? list.slice().reverse().map(([d, e]) => `<button class="hist-item" data-act="gotoday" data-d="${d}" data-cid="${c.id}">
         <span class="badge" style="background:${sevColor(e.sev)}">${e.sev ?? '–'}</span>
-        <span><b>${fmtLong(d)}</b><br><span class="meta">${esc(summaryLine(c.id, e, 140) || sevWord(e.sev))}</span></span></button>`).join('')
+        <span><b>${fmtLong(d)}</b><br><span class="meta">${esc(summaryLine(c.id, e, 140, d) || sevWord(e.sev))}</span></span></button>`).join('')
         : `<div class="empty">No entries in this time range yet.</div>`}
     </div>`;
 }
@@ -549,7 +654,7 @@ function chartSVG(cid, from, to) {
 /* ---------- Stats & summaries (shared with reports) ---------- */
 function computeStats(cid, list) {
   const st = { days: list.length, rated: 0, sum: 0, max: null, severe: 0, flare: 0, lay: 0, layHrs: 0, imp: {}, sx: {}, medDays: 0, meds: {}, changeDays: 0, months: {}, headCount: 0 };
-  const fields = FIELDS[cid] || [];
+  const fields = fieldsFor(cid);
   for (const [d, e] of list) {
     const m = d.slice(0, 7);
     const mo = st.months[m] = st.months[m] || { days: 0, rated: 0, sum: 0, flare: 0, lay: 0, missed: 0, severe: 0 };
@@ -560,7 +665,7 @@ function computeStats(cid, list) {
     for (const i of e.imp || []) st.imp[i] = (st.imp[i] || 0) + 1;
     if ((e.imp || []).includes('Missed work')) mo.missed++;
     if (e.meds && e.meds.length) st.medDays++;
-    for (const md of e.meds || []) { const r = st.meds[md.n] = st.meds[md.n] || { days: 0, Yes: 0, 'A little': 0, No: 0 }; r.days++; if (md.h) r[md.h]++; }
+    for (const md of e.meds || []) { const r = st.meds[md.n] = st.meds[md.n] || { days: 0, Yes: 0, 'A little': 0, No: 0, doses: {} }; r.days++; if (md.h) r[md.h]++; if (md.d) r.doses[md.d] = (r.doses[md.d] || 0) + 1; }
     if (e.log && e.log.length > 1) st.changeDays++;
     const x = e.x || {};
     for (const f of fields) {
@@ -568,15 +673,15 @@ function computeStats(cid, list) {
       if (f.t === 'multi') for (const o of x[f.k] || []) { const k = f.s === 'Where' ? `Location: ${o}` : o; st.sx[k] = (st.sx[k] || 0) + 1; }
     }
     for (const o of x.other || []) st.sx[o] = (st.sx[o] || 0) + 1;
-    if (cid === 'head') st.headCount += Number(x.count || 0);
+    if (tplOf(cid) === 'head') st.headCount += Number(x.count || 0);
   }
   st.avg = st.rated ? st.sum / st.rated : null;
   return st;
 }
-function summaryLine(cid, e, maxLen) {
+function summaryLine(cid, e, maxLen, date) {
   const parts = [];
   const x = e.x || {};
-  for (const f of FIELDS[cid] || []) {
+  for (const f of fieldsFor(cid)) {
     const v = x[f.k];
     if (v == null || v === '' || (Array.isArray(v) && !v.length)) continue;
     if (f.t === 'check') parts.push(f.l);
@@ -589,7 +694,8 @@ function summaryLine(cid, e, maxLen) {
   if (e.flare) parts.push('Flare-up');
   if (e.lay) parts.push(`Had to lie down${e.layHrs ? ` ${e.layHrs} hrs` : ''}`);
   if (e.imp && e.imp.length) parts.push(e.imp.join(', '));
-  if (e.meds && e.meds.length) parts.push(`Meds: ${e.meds.map(m => m.n + (m.h ? ` (helped: ${m.h})` : '')).join(', ')}`);
+  const ml = date ? medsOn(cid, date, e) : (e.meds || []);
+  if (ml.length) parts.push(`Meds: ${ml.map(m => medLabel(m, true) + (m.daily ? ' (every day)' : '') + (m.h ? ` (helped: ${m.h})` : '')).join(', ')}`);
   if (e.notes) parts.push(`Notes: ${e.notes}`);
   let s = parts.join('. ');
   if (maxLen && s.length > maxLen) s = s.slice(0, maxLen - 1) + '…';
@@ -667,7 +773,7 @@ function makeCSV() {
   for (const c of conds) {
     for (const [d, e] of entriesFor(c.id, from, to)) {
       const detail = summaryLine(c.id, { x: e.x }, 0);
-      rows.push([d, c.name, e.sev ?? '', sevWord(e.sev ?? null), e.log && e.log.length > 1 ? timelineText(e, ' -> ') : '', e.flare === true ? 'Yes' : e.flare === false ? 'No' : '', e.lay === true ? 'Yes' : e.lay === false ? 'No' : '', e.layHrs ?? '', (e.imp || []).join('; '), (e.meds || []).map(m => m.n + (m.h ? ` (${m.h})` : '')).join('; '), detail, rep.notes ? (e.notes || '') : '', e.c || '']);
+      rows.push([d, c.name, e.sev ?? '', sevWord(e.sev ?? null), e.log && e.log.length > 1 ? timelineText(e, ' -> ') : '', e.flare === true ? 'Yes' : e.flare === false ? 'No' : '', e.lay === true ? 'Yes' : e.lay === false ? 'No' : '', e.layHrs ?? '', (e.imp || []).join('; '), medsOn(c.id, d, e).map(m => medLabel(m, true) + (m.daily ? ' (every day)' : '') + (m.h ? ` (${m.h})` : '')).join('; '), detail, rep.notes ? (e.notes || '') : '', e.c || '']);
     }
   }
   if (rows.length === 1) return toast('No entries for those conditions in that time period');
@@ -716,13 +822,13 @@ function makePDF() {
       ['Worst severity', st.max == null ? '-' : String(st.max)],
       ['Severe days (7 or higher)', String(st.severe)],
       ['Flare-ups', String(st.flare)],
-      [c.id === 'head' ? 'Prostrating attacks (had to lie down)' : 'Times had to stop and lie down', `${st.lay}${st.layHrs ? ` (${+st.layHrs.toFixed(1)} hrs total)` : ''}`],
-      [c.id === 'head' ? 'Prostrating attacks per month (avg)' : 'Lie-down episodes per month (avg)', (st.lay / months).toFixed(1)],
+      [tplOf(c) === 'head' ? 'Prostrating attacks (had to lie down)' : 'Times had to stop and lie down', `${st.lay}${st.layHrs ? ` (${+st.layHrs.toFixed(1)} hrs total)` : ''}`],
+      [tplOf(c) === 'head' ? 'Prostrating attacks per month (avg)' : 'Lie-down episodes per month (avg)', (st.lay / months).toFixed(1)],
       ['Days missed work', String(st.imp['Missed work'] || 0)],
       ['Days left work early', String(st.imp['Left work early'] || 0)],
       ['Doctor / ER / VA visits', String(st.imp['Doctor / ER / VA visit'] || 0)],
     ];
-    if (c.id === 'head') tiles.splice(4, 0, ['Total headaches recorded', String(st.headCount)]);
+    if (tplOf(c) === 'head') tiles.splice(4, 0, ['Total headaches recorded', String(st.headCount)]);
     const colW = CW / 2, rowH = 30;
     tiles.forEach((tl, i) => {
       const col = i % 2, row = Math.floor(i / 2);
@@ -760,7 +866,7 @@ function makePDF() {
     if (mKeys.length) {
       need(40 + mKeys.length * 16);
       text('Month by month', M, 13, 'bold', navy); y += 16;
-      const cols = [['Month', 0], ['Days logged', 110], ['Avg severity', 190], ['Severe days', 270], ['Flare-ups', 345], [c.id === 'head' ? 'Prostrating' : 'Lay down', 410], ['Missed work', 470]];
+      const cols = [['Month', 0], ['Days logged', 110], ['Avg severity', 190], ['Severe days', 270], ['Flare-ups', 345], [tplOf(c) === 'head' ? 'Prostrating' : 'Lay down', 410], ['Missed work', 470]];
       doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(90, 95, 110);
       cols.forEach(([h, x]) => doc.text(h, M + x, y));
       y += 4; doc.setDrawColor(200, 204, 212); doc.line(M, y, M + CW, y); y += 12;
@@ -791,6 +897,11 @@ function makePDF() {
     }
 
     // Medications
+    for (const n of S.meds) if ((mi(n).for || []).includes(c.id)) { // every-day medications for this condition
+      let k = 0;
+      for (let d = from; d <= to; d = addDays(d, 1)) if (dailyFor(n, c.id, d) && dailyTaken(n, d) && !((getEntry(d, c.id) || {}).meds || []).some(m => m.n === n)) k++;
+      if (k) { const r = st.meds[n] = st.meds[n] || { days: 0, Yes: 0, 'A little': 0, No: 0, doses: {} }; r.days += k; r.daily = true; const ds = (S.medDoses[n] || [])[0]; if (ds) r.doses[ds] = (r.doses[ds] || 0) + k; }
+    }
     const medRows = Object.entries(st.meds).sort((a, b) => b[1].days - a[1].days);
     if (medRows.length) {
       need(40);
@@ -799,7 +910,9 @@ function makePDF() {
       for (const [name, r] of medRows) {
         need(15);
         const helped = ['Yes', 'A little', 'No'].filter(k => r[k]).map(k => `${k.toLowerCase()} ${r[k]}`).join(', ');
-        doc.text(pdfText(name), M, y);
+        const ds = Object.entries(r.doses).sort((a, b) => b[1] - a[1]);
+        const amt = ds.length === 1 ? ` ${ds[0][0]}` : ds.length ? ` (${ds.map(([d, n]) => `${d} x${n}`).join(', ')})` : '';
+        doc.text(pdfText(name + amt + (S.medRx[name] ? ' - prescribed' : '') + (r.daily ? ' - every day' : '')), M, y);
         doc.text(pdfText(`${r.days} day${r.days === 1 ? '' : 's'}${helped ? `  (helped: ${helped})` : ''}`), M + CW, y, { align: 'right' });
         y += 14;
       }
@@ -815,7 +928,7 @@ function makePDF() {
     doc.text('Date', M, y); doc.text('Severity', M + 74, y); doc.text('Details', M + 130, y);
     y += 4; doc.line(M, y, M + CW, y); y += 12;
     for (const [d, e] of list) {
-      const det = summaryLine(c.id, rep.notes ? e : Object.assign({}, e, { notes: '' }), 0) || '-';
+      const det = summaryLine(c.id, rep.notes ? e : Object.assign({}, e, { notes: '' }), 0, d) || '-';
       const late = e.c && daysBetween(d, e.c) > 1 ? ` [Entered ${fmtShort(e.c)}]` : '';
       doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5);
       const lines = doc.splitTextToSize(pdfText(det + late), CW - 130);
@@ -852,28 +965,27 @@ function renderSettings() {
     <div class="card">
       <h2 style="font-size:1.05em">Your info</h2>
       <div class="field"><label for="s-name">Name shown on reports</label><input type="text" id="s-name" value="${esc(S.profile.name)}" autocomplete="name"></div>
+      <p class="small muted">Only used on reports you create. It stays on this phone.</p>
     </div>
+    ${privacyCard()}
     <div class="card">
       <h2 style="font-size:1.05em">My conditions</h2>
       <p class="small muted">Turn on what you track. Turning one off hides it but keeps its history.</p>
-      <p class="small muted">Tap an icon to change it. Use ▲ ▼ to set the order on your Daily Log.</p>
+      <p class="small muted">Tap a condition to change its icon, rename it, or track part of it separately. Use ▲ ▼ to set the order on your Daily Log.</p>
       ${S.conditions.map((c, i) => `<div class="row-item cond-row">
         <button class="iconbtn" data-act="pickicon" data-cid="${c.id}" aria-label="Change icon for ${esc(c.name)}" aria-expanded="${iconPickFor === c.id}">${c.icon || '📝'}</button>
-        <div class="grow">${esc(c.name)}${c.custom ? ' <span class="muted small">(yours)</span>' : ''}</div>
+        <button class="grow namebtn" data-act="pickicon" data-cid="${c.id}" aria-expanded="${iconPickFor === c.id}">${esc(c.name)}${c.custom ? ' <span class="muted small">(yours)</span>' : ''} <span class="muted small">✎</span></button>
         <button class="mv" data-act="moveup" data-cid="${c.id}" aria-label="Move ${esc(c.name)} up" ${i === 0 ? 'disabled' : ''}>▲</button>
         <button class="mv" data-act="movedown" data-cid="${c.id}" aria-label="Move ${esc(c.name)} down" ${i === S.conditions.length - 1 ? 'disabled' : ''}>▼</button>
         <label class="switch"><input type="checkbox" data-act="togglecond" data-cid="${c.id}" ${c.on ? 'checked' : ''} aria-label="Track ${esc(c.name)}"><span></span></label></div>
-        ${iconPickFor === c.id ? `<div class="iconpick"><div class="lbl small">Choose an icon for ${esc(c.name)}</div><div class="icongrid">${ICON_CHOICES.map(ic => `<button data-act="seticon" data-cid="${c.id}" data-v="${ic}" aria-pressed="${c.icon === ic}">${ic}</button>`).join('')}</div>
-          ${c.custom ? `<button class="btn ghost small" data-act="delcond" data-cid="${c.id}" style="margin-top:8px;color:var(--danger)">Remove this condition</button>` : ''}</div>` : ''}`).join('')}
+        ${iconPickFor === c.id ? editPanel(c) : ''}`).join('')}
       <div class="field"><label for="s-newcond">Add your own (e.g. Asthma, Hypertension, ED, Hands)</label>
         <div style="display:flex;gap:8px;align-items:center"><span class="iconprev" id="newcond-icon" aria-hidden="true">📝</span><input type="text" id="s-newcond" placeholder="Condition name"><button class="btn" data-act="addcond">Add</button></div></div>
     </div>
     <div class="card">
       <h2 style="font-size:1.05em">💊 My medications</h2>
-      <p class="small muted">Medications you take or use. They show as quick-tap buttons when you log any condition. Ones you write in while logging are added here automatically.</p>
-      ${S.meds.map(m => `<div class="row-item"><div class="grow">${esc(m)}</div><button class="btn ghost small" data-act="delmed" data-v="${esc(m)}" aria-label="Remove ${esc(m)}">Remove</button></div>`).join('') || '<p class="small muted"><i>None yet.</i></p>'}
-      <div class="field"><label for="s-newmed">Add a medication (name and dose)</label>
-        <div style="display:flex;gap:8px"><input type="text" id="s-newmed" placeholder="e.g. Ibuprofen 800mg"><button class="btn" data-act="addmed">Add</button></div></div>
+      <p class="small muted">Your medications have their own tab now: add them, mark prescribed or every-day ones, and see how often you take them.</p>
+      <button class="btn secondary block" data-tab="meds">Open the Meds tab</button>
     </div>
     ${savedChoicesCard()}
     <div class="card">
@@ -922,6 +1034,25 @@ function renderSettings() {
         <li>Talk to a Veterans Service Officer (VSO) at your Post about how to submit your log.</li>
       </ul>
     </div>
+    <div class="card" id="updates-card">
+      <h2 style="font-size:1.05em">⬆️ App updates</h2>
+      <p class="small muted">You're using version <b>${APP_VERSION}</b>. The app never changes until you say so — your entries are never affected by an update.</p>
+      ${updateInfo ? `<div class="banner info" style="margin:8px 0 0"><b>Version ${esc(updateInfo.version)} is ready</b>${notesList()}<div class="row"><button class="btn" data-act="applyupdate">Update now</button></div></div>`
+        : `<button class="btn secondary block" data-act="checkupdate">Check for updates</button>`}
+    </div>
+    ${FEEDBACK_FORM ? `<div class="card">
+      <h2 style="font-size:1.05em">💬 Send feedback</h2>
+      <p class="small">Ideas, problems or questions about the app. <b>Your feedback is anonymous</b> — the form does not collect your name or email.</p>
+      <p class="small"><b>Please don't include your name, phone number, or anything that could identify you — and no health details.</b></p>
+      <button class="btn block" data-act="openform">Open feedback form</button>
+    </div>` : FEEDBACK_EMAIL ? `<div class="card">
+      <h2 style="font-size:1.05em">💬 Send feedback</h2>
+      <p class="small">Ideas, problems or questions about the app. This opens your email app so you can read it before sending.</p>
+      <p class="small"><b>Note: email is not anonymous</b> — the person who receives it will see your email address. Please don't include anything else that identifies you, and no health details.</p>
+      <div class="field"><div class="lbl">What kind?</div><div class="chips">${['Suggestion', 'Problem', 'Question'].map(k => `<button class="chip" data-act="fbkind" data-v="${k}" aria-pressed="${fbKind === k}">${k}</button>`).join('')}</div></div>
+      <div class="field"><label for="fb-text">Your message</label><textarea id="fb-text" placeholder="What would make the app better?"></textarea></div>
+      <button class="btn block" data-act="sendfeedback">Send feedback</button>
+    </div>` : ''}
     <div class="card">
       <h2 style="font-size:1.05em">Need to talk?</h2>
       <p class="small">Veterans Crisis Line — free, confidential, 24/7.</p>
@@ -929,7 +1060,7 @@ function renderSettings() {
     </div>
     <div class="card">
       <h2 style="font-size:1.05em">About</h2>
-      <p class="small muted">${esc(APP_NAME)} v${APP_VERSION}. Your data is stored only on this device and is never sent to anyone unless you export or share it. Not affiliated with or endorsed by the Department of Veterans Affairs. Not medical advice.</p>
+      <p class="small muted">${esc(APP_NAME)} v${APP_VERSION}. Not affiliated with or endorsed by the Department of Veterans Affairs. Not medical advice.</p>
       <p class="small muted">${totalEntryCount()} entries saved.</p>
       <button class="btn ghost block" data-act="eraseall" style="color:var(--danger)">Erase all my data</button>
     </div>`;
@@ -965,6 +1096,264 @@ function addReminderGoogle() {
   const { start, end } = reminderStart();
   const q = new URLSearchParams({ action: 'TEMPLATE', text: REMIND_TITLE, dates: `${start}/${end}`, recur: 'RRULE:FREQ=DAILY', details: `Take a minute to rate today's symptoms.\nOpen the app: ${appUrl()}` });
   window.open(`https://calendar.google.com/calendar/render?${q}`, '_blank', 'noopener');
+}
+/* ---------- Updates: only when the user taps "Update now" ---------- */
+let swReg = null, updateInfo = null, updateHidden = false, applyingUpdate = false, lastUpdateCheck = 0, fbKind = 'Suggestion';
+function notesList() { return updateInfo && updateInfo.notes && updateInfo.notes.length ? `<ul class="small" style="margin:6px 0 0;padding-left:20px">${updateInfo.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>` : ''; }
+function updateBanner() {
+  if (!updateInfo || updateHidden) return '';
+  return `<div class="banner info"><b>⬆️ Update available — version ${esc(updateInfo.version)}</b>${notesList()}
+    <p class="small muted" style="margin:6px 0 0">Your entries stay exactly as they are.</p>
+    <div class="row"><button class="btn" data-act="applyupdate">Update now</button><button class="btn ghost" data-act="laterupdate">Later</button></div></div>`;
+}
+function askWorker(w) {
+  return new Promise(res => {
+    const ch = new MessageChannel(); const t = setTimeout(() => res(null), 3000);
+    ch.port1.onmessage = e => { clearTimeout(t); res(e.data); };
+    w.postMessage({ type: 'info' }, [ch.port2]);
+  });
+}
+async function onWaiting(w) {
+  const info = await askWorker(w);
+  // Already running this version's code (e.g. moving from an older auto-updating version): switch quietly.
+  if (info && info.version === APP_VERSION) { w.postMessage({ type: 'skipWaiting' }); return; }
+  updateInfo = info || { version: 'new', notes: [] };
+  if (unlocked && S.settings.onboarded && (tab === 'today' || tab === 'settings')) render();
+}
+async function initUpdates() {
+  if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
+  try { swReg = await navigator.serviceWorker.register('sw.js'); } catch (e) { console.warn('SW', e); return; }
+  if (swReg.waiting && navigator.serviceWorker.controller) onWaiting(swReg.waiting);
+  swReg.addEventListener('updatefound', () => {
+    const w = swReg.installing;
+    if (w) w.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) onWaiting(w); });
+  });
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (applyingUpdate) { applyingUpdate = false; location.reload(); } });
+  lastUpdateCheck = Date.now();
+}
+async function checkForUpdates(manual) {
+  if (!swReg) { if (manual) toast('Updates work once the app is installed from its web address'); return; }
+  lastUpdateCheck = Date.now();
+  if (manual) toast('Checking…');
+  try { await swReg.update(); } catch (e) { if (manual) toast("Couldn't check — are you online?"); return; }
+  if (swReg.waiting) { await onWaiting(swReg.waiting); if (manual && !updateInfo) toast('You have the latest version'); }
+  else if (swReg.installing) { if (manual) toast('Downloading the update…'); }
+  else if (manual) toast('You have the latest version ✓');
+}
+function applyUpdate() {
+  if (swReg && swReg.waiting) { applyingUpdate = true; swReg.waiting.postMessage({ type: 'skipWaiting' }); toast('Updating…'); }
+  else location.reload();
+}
+function sendFeedback() {
+  const msg = ($('#fb-text')?.value || '').trim();
+  if (!msg) { toast('Type a message first'); return; }
+  const phone = isIOS() ? 'iPhone' : /android/i.test(navigator.userAgent) ? 'Android' : 'Other';
+  const body = `${msg}\n\n---\nApp version: ${APP_VERSION}\nPhone: ${phone}\nInstalled on home screen: ${isStandalone() ? 'yes' : 'no'}`;
+  location.href = `mailto:${FEEDBACK_EMAIL}?subject=${encodeURIComponent(`Vet Health Log ${fbKind}`)}&body=${encodeURIComponent(body)}`;
+}
+function editPanel(c) {
+  const tpl = tplOf(c);
+  return `<div class="iconpick">
+    <div class="lbl small">Name</div>
+    <div style="display:flex;gap:8px"><input type="text" id="rename-${c.id}" value="${esc(c.name)}" aria-label="New name for ${esc(c.name)}"><button class="btn small" data-act="rename" data-cid="${c.id}">Save</button></div>
+    <div class="lbl small" style="margin-top:12px">Track part of it separately</div>
+    <p class="small muted" style="margin:0 0 6px">Gives that part its own card, rating and history. Example: add "Neck" and "Shoulders" as their own items.</p>
+    <div style="display:flex;gap:8px"><input type="text" id="split-${c.id}" placeholder="e.g. Neck" aria-label="Name of the part to track separately"><button class="btn small" data-act="splitadd" data-cid="${c.id}">Add</button></div>
+    ${c.custom ? `<div class="lbl small" style="margin-top:12px">Questions to ask</div><div class="chips">${TEMPLATES.map(([v, l]) => `<button class="chip" data-act="settpl" data-cid="${c.id}" data-v="${v}" aria-pressed="${tpl === v}">${l}</button>`).join('')}</div>` : ''}
+    <div class="lbl small" style="margin-top:12px">Icon</div>
+    <div class="icongrid">${ICON_CHOICES.map(ic => `<button data-act="seticon" data-cid="${c.id}" data-v="${ic}" aria-pressed="${c.icon === ic}">${ic}</button>`).join('')}</div>
+    ${c.custom ? `<button class="btn ghost small" data-act="delcond" data-cid="${c.id}" style="margin-top:10px;color:var(--danger)">Remove this condition</button>` : ''}
+  </div>`;
+}
+function newCondition(name, from) {
+  const icon = guessIcon(name);
+  return { id: uid(), name, icon: icon !== '📝' ? icon : (from ? from.icon : icon), on: true, custom: true, tpl: guessTemplate(name) || (from ? tplOf(from) : '') };
+}
+function privacyCard(short) {
+  const core = [
+    '<b>Your entries never leave this phone</b> unless you send them yourself. There is no account, no server and no database — nobody else can see them: not the Post, not the app\'s maker, not the VA.',
+    '<b>No tracking.</b> No ads, no analytics, no cookies, nothing that counts or follows you.',
+    '<b>Locked down.</b> A security setting blocks the app from sending anything to any other website.',
+  ];
+  const more = [
+    '<b>You decide what leaves.</b> Only reports, backups and feedback you choose to send — and you pick where they go.',
+    '<b>Google Calendar reminder:</b> only the reminder text and time go to Google, never health information.',
+    '<b>Hosting:</b> the app\'s files come from GitHub. Like any website, GitHub can see that a device downloaded the app, but never your entries.',
+    '<b>Open for anyone to check:</b> the app\'s code is public on GitHub.',
+    '<b>Deleting the app</b> (or "Erase all my data") removes your entries for good — keep a backup if you want them.',
+  ];
+  return `<div class="card"><h2 style="font-size:1.05em">🔒 Your privacy</h2>
+    <ul class="small privacy" style="padding-left:20px;margin:8px 0 0">${(short ? core : core.concat(more)).map(x => `<li>${x}</li>`).join('')}</ul></div>`;
+}
+let medRange = 30, medEdit = null;
+function firstActivity() {
+  let f = firstEntryDate() || todayStr();
+  for (const n in S.medInfo) { const i = S.medInfo[n]; if (i.daily && i.daily.from < f) f = i.daily.from; for (const p of i.past || []) if (p.from < f) f = p.from; }
+  return f;
+}
+function medSpan() {
+  const to = todayStr(), from0 = addDays(to, -(medRange - 1)), fa = firstActivity();
+  const from = fa > from0 ? fa : from0;
+  return [from, to, daysBetween(from, to) + 1];
+}
+function medStats(n, from, to) {
+  const days = new Set(), doses = {}, forC = {}, help = { Yes: 0, 'A little': 0, No: 0 };
+  let skipped = 0;
+  for (const d in S.entries) {
+    if (d < from || d > to) continue;
+    const seen = new Set();
+    for (const cid in S.entries[d]) for (const m of S.entries[d][cid].meds || []) if (m.n === n) {
+      days.add(d); forC[cid] = (forC[cid] || 0) + 1; if (m.h) help[m.h]++;
+      if (m.d && !seen.has(m.d)) { seen.add(m.d); doses[m.d] = (doses[m.d] || 0) + 1; }
+    }
+  }
+  const i = mi(n);
+  if (i.daily || (i.past || []).length) for (let d = from; d <= to; d = addDays(d, 1)) {
+    if (!dailyActive(n, d)) continue;
+    if (!dailyTaken(n, d)) { if (!days.has(d)) skipped++; continue; }
+    if (!days.has(d)) { days.add(d); for (const cid of i.for || []) forC[cid] = (forC[cid] || 0) + 1; }
+  }
+  return { days: days.size, doses, forC, help, skipped };
+}
+function medCard(n, st, span) {
+  const i = mi(n), rx = S.medRx[n], daily = !!i.daily, usual = S.medDoses[n] || [];
+  const doses = Object.entries(st.doses).sort((a, b) => b[1] - a[1]);
+  const amt = daily ? `${usual[0] || 'Amount not set'} · every day` : doses.length ? doses.map(([d, k]) => `${esc(d)} ×${k}`).join(' · ') : usual.length ? usual.map(esc).join(', ') : '—';
+  const forList = Object.entries(st.forC).filter(([c]) => cond(c)).sort((a, b) => b[1] - a[1]).map(([c, k]) => `${esc(cond(c).name)} (${k})`);
+  const stripFrom = addDays(todayStr(), -29);
+  const strip = Array.from({ length: 30 }, (_, k) => { const d = addDays(stripFrom, k); return `<i class="${takenOn(n, d) ? (daily ? 'on daily' : 'on') : ''}" title="${fmtShort(d)}"></i>`; }).join('');
+  const ht = st.help.Yes + st.help['A little'] + st.help.No;
+  const head = `<div class="medhead"><span class="micon" aria-hidden="true">💊</span><h2>${esc(n)}${rx ? ' <span class="rx-tag" title="Prescribed">Rx</span>' : ''}</h2>
+      ${daily ? '<span class="daily">📅 Every day</span>' : '<span class="status">As needed</span>'}</div>`;
+  if (medEdit === n) return `<div class="card" id="med-${fileSafe(n)}">${head}${medEditPanel(n)}</div>`;
+  return `<div class="card" id="med-${fileSafe(n)}">${head}
+    <div class="kv"><b>${daily || doses.length < 2 ? 'Amount' : 'Amounts'}</b><span>${amt}</span></div>
+    <div class="kv"><b>Taken for</b><span>${forList.length ? forList.join(' · ') : '<span class="muted">Not recorded yet</span>'}</span></div>
+    ${i.since ? `<div class="kv"><b>Since</b><span>${esc(i.since)}</span></div>` : ''}
+    <div class="stats">
+      <div class="stat"><b>${st.days}</b><span>days taken (of ${span})</span></div>
+      <div class="stat"><b>${span >= 7 ? (st.days / span * 7).toFixed(1) : '–'}</b><span>days a week${span < 7 ? ' (after a week)' : ''}${st.skipped ? ` · skipped ${st.skipped}` : ''}</span></div>
+    </div>
+    <div class="strip" role="img" aria-label="Days taken in the last 30 days">${strip}</div>
+    <div class="strip-lbl"><span>30 days ago</span><span>Today</span></div>
+    ${ht ? `<div class="helpbar" aria-hidden="true"><i style="flex:${st.help.Yes};background:#43a047"></i><i style="flex:${st.help['A little']};background:#fbc02d"></i><i style="flex:${st.help.No};background:#d32f2f"></i></div>
+      <div class="small muted" style="margin-top:4px">Helped: <b style="color:var(--text)">Yes ${st.help.Yes}</b> · A little ${st.help['A little']} · No ${st.help.No}</div>` : ''}
+    ${(i.se || []).length ? `<div class="kv" style="margin-top:8px"><b>Side effects</b><span>${i.se.map(esc).join(', ')}</span></div>` : ''}
+    <button class="btn secondary small" data-act="mededit" data-v="${esc(n)}" style="margin-top:10px">Edit details ▾</button>
+  </div>`;
+}
+function medEditPanel(n) {
+  const i = mi(n), daily = !!i.daily, forL = i.for || [], se = i.se || [];
+  const conds = activeConds();
+  return `
+    <label class="rx" style="margin-top:8px"><input type="checkbox" data-act="medrx" data-v="${esc(n)}"${S.medRx[n] ? ' checked' : ''}> Prescribed</label>
+    <div class="field"><div class="lbl">How do you take it?</div><div class="chips">
+      <button class="chip" data-act="meddaily" data-v="${esc(n)}" data-on="0" aria-pressed="${!daily}">As needed</button>
+      <button class="chip" data-act="meddaily" data-v="${esc(n)}" data-on="1" aria-pressed="${daily}">📅 Every day</button></div>
+      <p class="small muted" style="margin:6px 0 0">"Every day" counts it as taken each day without tapping it on the Daily Log. On a day you skip it, tap it there to untick it.</p>
+      ${daily ? `<div style="margin-top:8px"><label class="small" for="medfrom-${fileSafe(n)}" style="font-weight:600">Counting every day since</label>
+        <input type="date" class="medfrom" id="medfrom-${fileSafe(n)}" data-med="${esc(n)}" value="${i.daily.from}" max="${todayStr()}"></div>` : ''}</div>
+    <div class="field"><div class="lbl">What is it for?</div><div class="chips">
+      ${conds.map(c => `<button class="chip check" data-act="medfor" data-v="${esc(n)}" data-cid="${c.id}" aria-pressed="${forL.includes(c.id)}">${esc(c.name)}</button>`).join('')}</div>
+      ${daily && !forL.length ? '<p class="small" style="margin:6px 0 0;color:var(--accent)">Pick what it\'s for, so it shows as taken on those conditions.</p>' : ''}</div>
+    <div class="field"><div class="lbl">Usual amounts</div><div class="chips">
+      ${(S.medDoses[n] || []).map(d => `<button class="chip mini" data-act="deldose" data-med="${esc(n)}" data-v="${esc(d)}" aria-label="Stop suggesting ${esc(d)}">${esc(d)} ✕</button>`).join('')}
+      <button class="chip add" data-act="medother" data-kind="mdose" data-v="${esc(n)}">＋ Add amount</button></div>
+      ${daily ? '<p class="small muted" style="margin:6px 0 0">The first amount is the one counted every day.</p>' : ''}</div>
+    <div class="field"><label for="medsince-${fileSafe(n)}">Started taking it</label>
+      <input type="text" class="medsince" id="medsince-${fileSafe(n)}" data-med="${esc(n)}" value="${esc(i.since || '')}" placeholder="e.g. March 2024"></div>
+    <div class="field"><div class="lbl">Side effects</div><div class="chips">
+      ${SIDE_EFFECTS.concat(S.custom.se.filter(x => !SIDE_EFFECTS.includes(x))).map(x => `<button class="chip check" data-act="medse" data-v="${esc(n)}" data-se="${esc(x)}" aria-pressed="${se.includes(x)}">${esc(x)}</button>`).join('')}
+      <button class="chip add" data-act="medother" data-kind="mse" data-v="${esc(n)}">＋ Other (write in)</button></div></div>
+    <div style="display:flex;gap:8px;margin-top:14px"><button class="btn" style="flex:1" data-act="mededit" data-v="">Done</button>
+      <button class="btn ghost" data-act="delmed" data-v="${esc(n)}" style="color:var(--danger)">Remove</button></div>`;
+}
+function renderMeds() {
+  const [from, to, span] = medSpan();
+  const rows = S.meds.map(n => [n, medStats(n, from, to)]).sort((a, b) => b[1].days - a[1].days);
+  return `
+    <div class="seg" role="group" aria-label="Time range">${[[30, '30 days'], [90, '90 days'], [365, '1 year']].map(([v, l]) => `<button class="chip" data-act="mrange" data-v="${v}" aria-pressed="${medRange === v}">${l}</button>`).join('')}</div>
+    ${rows.length ? rows.map(([n, st]) => medCard(n, st, span)).join('') : '<div class="card"><div class="empty">No medications yet. Add the ones you take below.</div></div>'}
+    <div class="card">
+      <h2 style="font-size:1.05em">＋ Add a medication</h2>
+      <div style="display:flex;gap:8px;margin-top:8px"><input type="text" id="s-newmed" placeholder="Name, e.g. Ibuprofen" aria-label="Medication name"><input type="text" id="s-newdose" placeholder="Amount" style="flex:0 0 34%;width:34%" aria-label="Usual amount (optional)"></div>
+      <label class="rx" style="margin-top:8px"><input type="checkbox" id="s-newrx"> Prescribed</label>
+      <button class="btn block" data-act="addmed" style="margin-top:8px">Add</button>
+      <p class="small muted" style="margin:8px 0 0">Adding an amount to a medication you already have saves it as another usual amount.</p>
+    </div>
+    ${S.meds.length ? `<div class="card">
+      <h2 style="font-size:1.05em">📄 Medication report</h2>
+      <p class="small muted">One PDF of all your medications for the time range above: amounts, prescribed or not, what each is for, how often you took it, whether it helped, and side effects. Good to bring to your VSO or doctor.</p>
+      <button class="btn block" data-act="medpdf">Make medication report (PDF)</button>
+    </div>` : ''}`;
+}
+function addMedOther(inp) {
+  if (!inp) return;
+  const v = (inp.value || '').trim().replace(/\s+/g, ' ').slice(0, 40); const n = inp.dataset.med;
+  if (!v) { inp.focus(); return; }
+  if (inp.dataset.kind === 'mdose') { addDose(n, v); toast(`Saved ${v} for ${n}`); }
+  else {
+    let x = SIDE_EFFECTS.concat(S.custom.se).find(y => y.toLowerCase() === v.toLowerCase());
+    if (!x) { x = v.charAt(0).toUpperCase() + v.slice(1); S.custom.se.push(x); }
+    const i = medInfo(n); i.se = i.se || []; if (!i.se.includes(x)) i.se.push(x);
+    toast(`Saved "${x}"`);
+  }
+  save(); render();
+}
+function makeMedPDF() {
+  if (!window.jspdf) return toast('PDF tool still loading — try again in a moment');
+  if (!S.meds.length) return toast('Add a medication first');
+  const [from, to, span] = medSpan();
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'pt', format: 'letter' });
+  const PW = 612, PH = 792, M = 44, CW = PW - M * 2, BOTTOM = PH - 56, LW = 110;
+  const navy = [20, 40, 80];
+  let y = M;
+  const name = S.profile.name ? pdfText(S.profile.name) : '';
+  const need = h => { if (y + h > BOTTOM) { doc.addPage(); y = M; } };
+  doc.setFillColor(...navy); doc.rect(0, 0, PW, 70, 'F');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.setTextColor(255, 255, 255); doc.text('Medication Summary', M, 32);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(230, 230, 240);
+  doc.text(pdfText(`${name ? name + '   |   ' : ''}${fmtShort(from)} to ${fmtShort(to)} (${span} days)   |   Created ${fmtShort(todayStr())}`), M, 52);
+  y = 94;
+  doc.setFontSize(9); doc.setTextColor(90, 95, 110);
+  doc.text('Medications the veteran recorded taking, how often, what for, whether they helped, and side effects.', M, y); y += 20;
+  const rows = S.meds.map(n => [n, medStats(n, from, to)]).sort((a, b) => b[1].days - a[1].days);
+  for (const [n, st] of rows) {
+    const i = mi(n);
+    const doses = Object.entries(st.doses).sort((a, b) => b[1] - a[1]);
+    const usual = S.medDoses[n] || [];
+    const forList = Object.entries(st.forC).filter(([c]) => cond(c)).sort((a, b) => b[1] - a[1]).map(([c, k]) => `${cond(c).name} (${k} day${k === 1 ? '' : 's'})`);
+    const ht = st.help.Yes + st.help['A little'] + st.help.No;
+    const lines = [
+      ['How taken', i.daily ? `Every day (counted daily since ${fmtShort(i.daily.from)})` : 'As needed'],
+      ['Amount', i.daily && usual[0] ? usual[0] : doses.length ? doses.map(([d, k]) => `${d} (${k} day${k === 1 ? '' : 's'})`).join(', ') : usual.join(', ') || 'Not recorded'],
+      ['Taken for', forList.join(', ') || 'Not recorded'],
+      ['Started', i.since || 'Not recorded'],
+      ['Days taken', `${st.days} of ${span} days (${(st.days / span * 7).toFixed(1)} days a week)${st.skipped ? ` - skipped ${st.skipped} day${st.skipped === 1 ? '' : 's'}` : ''}`],
+      ['Helped', ht ? `Yes ${st.help.Yes}, a little ${st.help['A little']}, no ${st.help.No} (of ${ht} times answered)` : 'Not recorded'],
+      ['Side effects', (i.se || []).join(', ') || 'None recorded'],
+    ];
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+    const wrapped = lines.map(([l, v]) => [l, doc.splitTextToSize(pdfText(v), CW - LW)]);
+    need(28 + wrapped.reduce((h, [, w]) => h + w.length * 13 + 2, 0));
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(...navy);
+    doc.text(pdfText(n + (S.medRx[n] ? '  (prescribed)' : '')), M, y); y += 16;
+    for (const [l, w] of wrapped) {
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(90, 95, 110); doc.text(l, M, y);
+      doc.setFont('helvetica', 'normal'); doc.setTextColor(20, 20, 20); doc.text(w, M + LW, y);
+      y += w.length * 13 + 2;
+    }
+    y += 4; doc.setDrawColor(220, 224, 232); doc.line(M, y, M + CW, y); y += 18;
+  }
+  const pages = doc.getNumberOfPages();
+  for (let p = 1; p <= pages; p++) {
+    doc.setPage(p);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(120, 120, 130);
+    doc.text(pdfText(`Personal medication log kept by the veteran${name ? ` (${name})` : ''}. Entries are the veteran's own records, not a pharmacy or medical record.`), M, PH - 30);
+    doc.text(`Page ${p} of ${pages}`, PW - M, PH - 30, { align: 'right' });
+  }
+  deliverFile(doc.output('blob'), `medication-summary-${from}-to-${to}.pdf`, 'Medication summary');
 }
 function savedChoicesCard() {
   const groups = [];
@@ -1142,9 +1531,16 @@ function onClick(ev) {
       const e = ensureEntry(curDate, cid); const n = t.dataset.v;
       e.meds = e.meds || [];
       const i = e.meds.findIndex(m => m.n === n);
-      i >= 0 ? e.meds.splice(i, 1) : e.meds.push({ n });
+      if (dailyFor(n, cid, curDate)) { // every-day medication: tapping marks the day taken / skipped
+        if (i >= 0) { e.meds.splice(i, 1); setSkip(n, curDate, true); } else setSkip(n, curDate, dailyTaken(n, curDate));
+      } else if (i >= 0) e.meds.splice(i, 1); else { const d = doseOptions(n)[0]; e.meds.push(d ? { n, d } : { n }); }
       if (!e.meds.length) delete e.meds;
       pruneEntry(curDate, cid); save(); rerenderCard(cid); break;
+    }
+    case 'sevedit': {
+      sevEdit.add(cid); sevEditY = window.scrollY; rerenderCard(cid);
+      const r = $(`.card[data-cid="${cid}"] input.sev`); if (r) r.focus({ preventScroll: true });
+      break;
     }
     case 'medhelp': {
       const e = getEntry(curDate, cid); const m = e && e.meds && e.meds[Number(t.dataset.i)]; if (!m) break;
@@ -1153,11 +1549,11 @@ function onClick(ev) {
     }
     case 'other': { // swap the "+ Other" chip for a small text box
       const kind = t.dataset.kind;
-      const ph = kind === 'med' ? 'Name and dose, e.g. Ibuprofen 800mg' : kind === 'imp' ? 'e.g. Could not play with kids' : 'Type what you noticed';
+      const ph = kind === 'med' ? 'Name and amount, e.g. Ibuprofen 800mg' : kind === 'imp' ? 'e.g. Could not play with kids' : 'Type what you noticed';
       t.outerHTML = `<span class="adder"><input type="text" data-kind="${kind}" placeholder="${ph}" enterkeyhint="done"><button class="btn small" data-act="otheradd" data-kind="${kind}">Add</button></span>`;
       $('.adder input', card).focus(); break;
     }
-    case 'otheradd': addOther(card, t.dataset.kind, $('.adder input', card)); break;
+    case 'otheradd': addOther(card, t.dataset.kind, $('input', t.closest('.adder'))); break;
     case 'clearentry': delete pendingChange[cid]; if (confirm(`Clear the ${cond(cid).name} entry for ${fmtLong(curDate)}?`)) { if (S.entries[curDate]) { delete S.entries[curDate][cid]; if (!Object.keys(S.entries[curDate]).length) delete S.entries[curDate]; } save(); rerenderCard(cid); } break;
     case 'step': {
       const e = ensureEntry(curDate, cid);
@@ -1181,8 +1577,8 @@ function onClick(ev) {
     case 'addcond': {
       const inp = $('#s-newcond'); const n = (inp.value || '').trim();
       if (!n) { toast('Type a condition name first'); return; }
-      const ic = guessIcon(n);
-      S.conditions.push({ id: uid(), name: n, icon: ic, on: true, custom: true }); save(); render(); toast(`Added ${ic} ${n} — tap the icon to change it`); break;
+      const nc = newCondition(n); S.conditions.push(nc); save(); render();
+      toast(`Added ${nc.icon} ${n}${nc.tpl ? ' with ' + TEMPLATES.find(t => t[0] === nc.tpl)[1].toLowerCase() + ' questions' : ''} — tap it in the list to change`); break;
     }
     case 'delcond': {
       const c = cond(cid); const n = entriesFor(cid).length;
@@ -1191,10 +1587,29 @@ function onClick(ev) {
       for (const d in S.entries) { delete S.entries[d][cid]; if (!Object.keys(S.entries[d]).length) delete S.entries[d]; }
       save(); render(); break;
     }
+    case 'applyupdate': applyUpdate(); break;
+    case 'laterupdate': updateHidden = true; render(); toast('You can update any time in Settings'); break;
+    case 'checkupdate': checkForUpdates(true); break;
+    case 'fbkind': fbKind = t.dataset.v; $$('[data-act="fbkind"]').forEach(b => b.setAttribute('aria-pressed', String(b === t))); break;
+    case 'sendfeedback': sendFeedback(); break;
+    case 'openform': window.open(FEEDBACK_FORM, '_blank', 'noopener'); break;
     case 'remind-ics': { const v = $('#s-remtime')?.value; if (v) { S.settings.reminderTime = v; save(); } addReminderICS(); break; }
     case 'remind-google': { const v = $('#s-remtime')?.value; if (v) { S.settings.reminderTime = v; save(); } addReminderGoogle(); break; }
     case 'pickicon': iconPickFor = iconPickFor === cid ? null : cid; render(); scrollToCond(cid); break;
-    case 'seticon': cond(cid).icon = t.dataset.v; iconPickFor = null; save(); render(); scrollToCond(cid); break;
+    case 'seticon': cond(cid).icon = t.dataset.v; save(); render(); scrollToCond(cid); break;
+    case 'rename': {
+      const n = ($(`#rename-${cid}`).value || '').trim().replace(/\s+/g, ' ').slice(0, 50);
+      if (!n) { toast('Type a name first'); return; }
+      cond(cid).name = n; iconPickFor = null; save(); render(); scrollToCond(cid); toast('Renamed'); break;
+    }
+    case 'splitadd': {
+      const base = cond(cid); const n = ($(`#split-${cid}`).value || '').trim().replace(/\s+/g, ' ').slice(0, 50);
+      if (!n) { toast('Type a name, e.g. Neck'); return; }
+      const nc = newCondition(n, base);
+      S.conditions.splice(S.conditions.indexOf(base) + 1, 0, nc); iconPickFor = null; save(); render(); scrollToCond(nc.id);
+      toast(`Added ${nc.icon} ${n} — it has its own card and history`); break;
+    }
+    case 'settpl': cond(cid).tpl = t.dataset.v; save(); render(); scrollToCond(cid); break;
     case 'moveup': case 'movedown': {
       const i = S.conditions.findIndex(c => c.id === cid); const j = act === 'moveup' ? i - 1 : i + 1;
       if (i < 0 || j < 0 || j >= S.conditions.length) break;
@@ -1202,12 +1617,46 @@ function onClick(ev) {
       break;
     }
     case 'addmed': {
-      const inp = $('#s-newmed'); const n = (inp.value || '').trim().replace(/\s+/g, ' ').slice(0, 60);
-      if (!n) { toast('Type a medication name first'); return; }
-      if (!S.meds.some(m => m.toLowerCase() === n.toLowerCase())) S.meds.push(n);
-      save(); render(); toast(`Added ${n}`); break;
+      const raw = ($('#s-newmed').value || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+      const amt = ($('#s-newdose').value || '').trim().replace(/\s+/g, ' ').slice(0, 30);
+      if (!raw) { toast('Type a medication name first'); return; }
+      let [n, d] = splitMed(raw); if (amt) d = amt;
+      const name = medName(n); if (d) d = addDose(name, d);
+      if ($('#s-newrx').checked) S.medRx[name] = true;
+      save(); render(); toast(`Added ${medLabel({ n: name, d })}`); break;
     }
-    case 'delmed': S.meds = S.meds.filter(m => m !== t.dataset.v); save(); render(); break;
+    case 'mrange': medRange = Number(t.dataset.v); render(); break;
+    case 'mededit': medEdit = t.dataset.v || null; render(); { const el = medEdit && document.getElementById('med-' + fileSafe(medEdit)); if (el) el.scrollIntoView({ block: 'start' }); } break;
+    case 'meddaily': {
+      const n = t.dataset.v, i = medInfo(n), on = t.dataset.on === '1';
+      if (on && !i.daily) { i.daily = { from: todayStr() }; toast('Counted as taken every day from today'); }
+      else if (!on && i.daily) { const yd = addDays(todayStr(), -1); if (i.daily.from <= yd) (i.past = i.past || []).push({ from: i.daily.from, to: yd }); delete i.daily; toast('Now "as needed" — earlier days stay counted'); }
+      save(); render(); break;
+    }
+    case 'medfor': {
+      const i = medInfo(t.dataset.v), l = i.for || [], k = l.indexOf(t.dataset.cid);
+      if (k >= 0) l.splice(k, 1); else l.push(t.dataset.cid);
+      if (l.length) i.for = l; else delete i.for; save(); render(); break;
+    }
+    case 'medse': {
+      const i = medInfo(t.dataset.v), l = i.se || [], k = l.indexOf(t.dataset.se);
+      if (k >= 0) l.splice(k, 1); else l.push(t.dataset.se);
+      if (l.length) i.se = l; else delete i.se; save(); render(); break;
+    }
+    case 'medother': {
+      const par = t.parentElement, kind = t.dataset.kind;
+      t.outerHTML = `<span class="adder"><input type="text" data-kind="${kind}" data-med="${esc(t.dataset.v)}" placeholder="${kind === 'mdose' ? 'e.g. 400mg' : 'Type the side effect'}" enterkeyhint="done"><button class="btn small" data-act="medotheradd">Add</button></span>`;
+      $('.adder input', par).focus(); break;
+    }
+    case 'medotheradd': addMedOther($('input', t.closest('.adder'))); break;
+    case 'medpdf': makeMedPDF(); break;
+    case 'deldose': {
+      const m = t.dataset.med; S.medDoses[m] = (S.medDoses[m] || []).filter(x => x !== t.dataset.v);
+      if (!S.medDoses[m].length) delete S.medDoses[m]; save(); render(); break;
+    }
+    case 'delmed':
+      if (!confirm(`Remove ${t.dataset.v} from your medications? Past entries keep it.`)) return;
+      S.meds = S.meds.filter(m => m !== t.dataset.v); medEdit = null; save(); render(); break;
     case 'delcustom': {
       const v = t.dataset.v;
       if (t.dataset.kind === 'imp') S.custom.imp = S.custom.imp.filter(x => x !== v);
@@ -1232,10 +1681,14 @@ function addOther(card, kind, inp) {
   if (!v) { inp.focus(); return; }
   const cid = card.dataset.cid; const e = ensureEntry(curDate, cid);
   const has = (list, x) => list.some(y => y.toLowerCase() === x.toLowerCase());
-  if (kind === 'med') {
-    if (!has(S.meds, v)) S.meds.push(v);
-    const name = S.meds.find(y => y.toLowerCase() === v.toLowerCase());
-    e.meds = e.meds || []; if (!e.meds.some(m => m.n === name)) e.meds.push({ n: name });
+  if (kind === 'med' || kind === 'dose') {
+    let name, d;
+    if (kind === 'dose') { name = inp.dataset.med; d = v.slice(0, 30); }
+    else { const p = splitMed(v); name = medName(p[0]); d = p[1]; }
+    if (d) d = addDose(name, d);
+    e.meds = e.meds || []; let m = e.meds.find(x => x.n === name); if (!m) e.meds.push(m = { n: name });
+    if (d) m.d = d;
+    save(); rerenderCard(cid); toast(kind === 'dose' ? `Saved ${d} for ${name}` : `Saved ${medLabel({ n: name, d })} for next time`); return;
   } else if (kind === 'imp') {
     const all = IMPACTS.concat(S.custom.imp);
     if (!has(all, v)) S.custom.imp.push(v);
@@ -1274,9 +1727,20 @@ function onChange(ev) {
   const card = t.closest('.card[data-cid]');
   if (t.matches('input.sev') && card) {
     const cid = card.dataset.cid;
-    setSeverity(cid, Number(t.value)); save(); rerenderCard(cid); return;
+    // a tap that only stopped the page scrolling is not a rating
+    if (Date.now() - lastScrollAt < 400) { rerenderCard(cid); return; }
+    sevEdit.delete(cid); setSeverity(cid, Number(t.value)); save(); rerenderCard(cid); return;
   }
   if (t.closest('.adder')) return; // write-in box: saved by its Add button / Enter key
+  if (t.matches('select.dose') && card) {
+    const cid = card.dataset.cid, name = t.dataset.med;
+    if (t.value === '__other') { const row = t.parentElement; t.outerHTML = doseAdder(name); $('input', row).focus(); return; }
+    const e = ensureEntry(curDate, cid); e.meds = e.meds || [];
+    let m = e.meds.find(x => x.n === name); if (!m) e.meds.push(m = { n: name });
+    if (t.value) m.d = t.value; else delete m.d;
+    if (dailyActive(name, curDate)) setSkip(name, curDate, false);
+    save(); rerenderCard(cid); return;
+  }
   if (t.id === 'datepick') { if (t.value) { curDate = t.value > todayStr() ? todayStr() : t.value; render(); } return; }
   if (card && t.dataset.f) {
     const cid = card.dataset.cid; const e = ensureEntry(curDate, cid);
@@ -1286,6 +1750,9 @@ function onChange(ev) {
     setPath(e, t.dataset.f, v); pruneEntry(curDate, cid); save(); updateCardStatus(cid); return;
   }
   if (t.id === 's-name') { S.profile.name = t.value.trim(); save(); toast('Saved'); return; }
+  if (t.dataset.act === 'medrx') { if (t.checked) S.medRx[t.dataset.v] = true; else delete S.medRx[t.dataset.v]; save(); if (tab === 'meds') render(); return; }
+  if (t.classList.contains('medsince')) { const i = medInfo(t.dataset.med); const v = t.value.trim().slice(0, 40); if (v) i.since = v; else delete i.since; save(); return; }
+  if (t.classList.contains('medfrom')) { const i = medInfo(t.dataset.med); if (t.value && i.daily) { i.daily.from = t.value > todayStr() ? todayStr() : t.value; save(); render(); } return; }
   if (t.dataset.act === 'togglecond') { cond(t.dataset.cid).on = t.checked; save(); return; }
   if (t.id === 's-remtime') { if (t.value) { S.settings.reminderTime = t.value; save(); } return; }
   if (t.dataset.act === 'compact') { S.settings.compact = t.checked; save(); applyPrefs(); return; }
@@ -1302,12 +1769,13 @@ document.addEventListener('input', onInput);
 document.addEventListener('change', onChange);
 document.addEventListener('keydown', ev => {
   const inp = ev.target.closest && ev.target.closest('.adder input');
-  if (inp && ev.key === 'Enter') { ev.preventDefault(); addOther(inp.closest('.card[data-cid]'), inp.dataset.kind, inp); }
+  if (inp && ev.key === 'Enter') { ev.preventDefault(); if (inp.dataset.kind === 'mdose' || inp.dataset.kind === 'mse') addMedOther(inp); else addOther(inp.closest('.card[data-cid]'), inp.dataset.kind, inp); }
 });
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredInstall = e; if (unlocked) render(); });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { hiddenAt = Date.now(); return; }
   if (curDate > todayStr()) curDate = todayStr();
+  if (swReg && Date.now() - lastUpdateCheck > 60 * 60 * 1000) checkForUpdates(false);
   if (S.settings.pinHash && unlocked && hiddenAt && Date.now() - hiddenAt > RELOCK_MS) lockIfNeeded();
   else if (unlocked && tab === 'today' && !document.activeElement.matches('input,textarea')) {
     // roll over to the new day if the app was left open overnight
@@ -1316,6 +1784,6 @@ document.addEventListener('visibilitychange', () => {
 });
 let lastSeenToday = todayStr();
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW', e));
+initUpdates();
 applyPrefs(); // so the PIN screen uses the chosen colors too
 if (!lockIfNeeded()) render();

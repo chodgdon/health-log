@@ -1,21 +1,42 @@
-/* Offline support: caches the app so it opens with no internet. Bump VERSION when files change. */
-const VERSION = 'vhl-1.2.0';
+/* Offline support + updates on the user's terms.
+   The app always runs from the copy saved on the phone. A new version downloads quietly in the
+   background and waits until the user taps "Update now" (the page sends 'skipWaiting').
+   When you change any app file: bump VERSION and update NOTES (shown in the "Update available" box). */
+const VERSION = 'vhl-1.3.0';
+const NOTES = [
+  'You choose when to update (this message!)',
+  'New Meds tab: how often you take each medication, what it is for, whether it helps, side effects, and a medication report',
+  'Mark a medication "Every day" and it is counted for you',
+  'Medication amounts and a Prescribed tick box',
+  'Ratings you already set are locked, so scrolling cannot change them',
+  'Track part of a condition separately (e.g. Neck), rename conditions, and a new privacy section',
+];
 const FILES = ['./', 'index.html', 'app.js', 'manifest.webmanifest', 'jspdf.umd.min.js', 'qrcode.min.js', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
+  e.waitUntil(
+    caches.open(VERSION)
+      .then(c => c.addAll(FILES.map(f => new Request(f, { cache: 'reload' }))))
+      // First install on this phone: start right away. Later versions wait for the user.
+      .then(() => { if (!self.registration.active) return self.skipWaiting(); })
+  );
 });
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k.startsWith('vhl-') && k !== VERSION).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil(caches.keys()
+    .then(keys => Promise.all(keys.filter(k => k.startsWith('vhl-') && k !== VERSION).map(k => caches.delete(k))))
+    .then(() => self.clients.claim()));
 });
-// Network first (so updates arrive), fall back to cache when offline.
+self.addEventListener('message', e => {
+  const d = e.data || {};
+  if (d.type === 'skipWaiting') self.skipWaiting();
+  if (d.type === 'info' && e.ports[0]) e.ports[0].postMessage({ version: VERSION.replace(/^vhl-/, ''), notes: NOTES });
+});
+// Serve this version's saved copy; only go to the network for anything not saved.
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET' || new URL(e.request.url).origin !== location.origin) return;
   e.respondWith(
-    fetch(e.request).then(res => {
-      const copy = res.clone();
-      if (res.ok) caches.open(VERSION).then(c => c.put(e.request, copy));
-      return res;
-    }).catch(() => caches.match(e.request, { ignoreSearch: true }).then(r => r || caches.match('index.html')))
+    caches.open(VERSION)
+      .then(c => c.match(e.request, { ignoreSearch: true }).then(hit => hit || (e.request.mode === 'navigate' ? c.match('index.html') : null)))
+      .then(hit => hit || fetch(e.request))
   );
 });
